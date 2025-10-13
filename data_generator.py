@@ -5,9 +5,10 @@ import numpy as np
 import random
 
 # Define special tokens and vocabulary
+# ADDED <EVENT> token to represent generic events in the sequence.
 SPECIAL_TOKENS = {
     '<PAD>': 0, '<TASK_NEXT_ACTIVITY>': 1, '<TASK_REMAINING_TIME>': 2,
-    '<CASE_SEP>': 3, '<LABEL>': 4, '<QUERY>': 5
+    '<CASE_SEP>': 3, '<LABEL>': 4, '<QUERY>': 5, '<EVENT>': 6
 }
 # We'll have 10 possible activities (A0-A9)
 ACTIVITY_VOCAB_SIZE = 10
@@ -86,7 +87,8 @@ class EpisodeGenerator:
 
             # Use a random prefix of the case events
             prefix_len = random.randint(2, len(case) - 1)
-            event_tokens = list(range(VOCAB_SIZE, VOCAB_SIZE + prefix_len))  # Placeholder IDs for events
+            # FIXED: Use the valid <EVENT> token instead of out-of-bounds placeholders.
+            event_tokens = [SPECIAL_TOKENS['<EVENT>']] * prefix_len
             episode_tokens.extend(event_tokens)
             episode_tokens.append(SPECIAL_TOKENS['<LABEL>'])
 
@@ -103,8 +105,8 @@ class EpisodeGenerator:
         episode_tokens.append(SPECIAL_TOKENS['<QUERY>'])
 
         query_prefix_len = random.randint(2, len(query_case) - 1)
-        query_event_tokens = list(
-            range(VOCAB_SIZE + len(episode_tokens), VOCAB_SIZE + len(episode_tokens) + query_prefix_len))
+        # FIXED: Use the valid <EVENT> token instead of out-of-bounds placeholders.
+        query_event_tokens = [SPECIAL_TOKENS['<EVENT>']] * query_prefix_len
         episode_tokens.extend(query_event_tokens)
         episode_tokens.append(SPECIAL_TOKENS['<LABEL>'])
 

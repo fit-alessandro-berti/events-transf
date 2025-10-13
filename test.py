@@ -19,6 +19,11 @@ def evaluate_model(model, generator, k_shots, task, n_episodes=100):
     with torch.no_grad():
         for _ in range(n_episodes):
             episode = generator.create_episode(k_shots, task)
+
+            # FIXED: Get the index of the <LABEL> token *before* padding.
+            # Reading from [-1] is incorrect for padded sequences.
+            label_idx = len(episode['tokens']) - 1
+
             batch = collate_batch([episode])  # Batch size of 1 for evaluation
 
             for key in batch:
@@ -27,8 +32,8 @@ def evaluate_model(model, generator, k_shots, task, n_episodes=100):
 
             activity_logits, time_logits = model(batch)
 
-            # Get the logits at the final, query <LABEL> position
-            query_logits = activity_logits[0, -1, :] if task == 'next_activity' else time_logits[0, -1, :]
+            # Get the logits at the correct query <LABEL> position
+            query_logits = activity_logits[0, label_idx, :] if task == 'next_activity' else time_logits[0, label_idx, :]
 
             prediction = torch.argmax(query_logits).item()
 
@@ -73,8 +78,12 @@ def run_evaluation():
         d_model=D_MODEL, n_layers=N_LAYERS, n_heads=N_HEADS,
         num_num_features=NUM_NUM_FEATURES, num_time_features=NUM_TIME_FEATURES
     ).to(device)
-    model.load_state_dict(torch.load("io_transformer.pth", map_location=device))
-    print("Model loaded successfully.")
+    try:
+        model.load_state_dict(torch.load("io_transformer.pth", map_location=device))
+        print("Model loaded successfully.")
+    except FileNotFoundError:
+        print("Could not find trained model 'io_transformer.pth'. Please train the model first.")
+        return
 
     shot_configs = [0, 4, 8]
     tasks = ['next_activity', 'remaining_time']
