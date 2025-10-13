@@ -1,19 +1,12 @@
 # data_generator.py
 #
 # Synthetic process-mining style data generator for training.
-# Explicitly models:
-#   - activity (categorical)
-#   - resource (categorical)
-#   - organizational group (categorical; derived from resource)
-#   - time between events (delta_t)
-#   - amount (numeric attribute)
-#
-# Multiple simulation models are created; each model generates many traces so
-# the learner must generalize across model changes.
+# Adds DENSE per-event targets to strengthen supervision:
+#   - dense_next_targets / dense_time_targets with masks to avoid query leakage.
 
 import math
 import random
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any
 
 import numpy as np
 import torch
@@ -30,18 +23,15 @@ SPECIAL_TOKENS = {
     '<QUERY>': 5,
     '<EVENT>': 6,
 }
-ACTIVITY_VOCAB_SIZE = 10                 # fixed class space for "next activity"
-TIME_BUCKET_VOCAB_SIZE = 50              # discretization for remaining time
+ACTIVITY_VOCAB_SIZE = 10
+TIME_BUCKET_VOCAB_SIZE = 50
 VOCAB_SIZE = len(SPECIAL_TOKENS) + ACTIVITY_VOCAB_SIZE + TIME_BUCKET_VOCAB_SIZE
 
 
 def get_reverse_vocab():
-    """Creates a reverse mapping from token ID to human-readable string."""
     rev_vocab = {v: k for k, v in SPECIAL_TOKENS.items()}
-    # Add activity tokens
     for i in range(ACTIVITY_VOCAB_SIZE):
         rev_vocab[len(SPECIAL_TOKENS) + i] = f"ACTIVITY_{i}"
-    # Add time bucket tokens
     for i in range(TIME_BUCKET_VOCAB_SIZE):
         rev_vocab[len(SPECIAL_TOKENS) + ACTIVITY_VOCAB_SIZE + i] = f"TIME_BUCKET_{i}"
     return rev_vocab
@@ -51,15 +41,6 @@ def get_reverse_vocab():
 # Simulation model
 # ----------------------------
 class ProcSimModel:
-    """
-    A light-weight process simulation model.
-
-    Parameters vary per 'variant_id' to encourage generalization:
-      - Transition dynamics between activities
-      - Per-activity duration scale (lognormal)
-      - Resource assignment preferences
-      - Amount emission statistics
-    """
     def __init__(
         self,
         variant_id: int,
@@ -73,38 +54,29 @@ class ProcSimModel:
         self.R = num_resources
         self.G = num_groups
 
-        # Resource -> group mapping (simple partition)
         self.resource_group = np.array([(r + variant_id) % self.G for r in range(self.R)], dtype=int)
-
-        # Transition matrix with a strong forward bias and a variant-specific skip
         self.trans_mat = self._build_transition_matrix(variant_id)
 
-        # Per-activity duration mean (in arbitrary time units) and noise
         base_dur = 1.2 + 0.25 * self.rng.rand(self.A) + 0.15 * (np.arange(self.A) % 3)
         self.dur_means = base_dur * (1.0 + 0.15 * variant_id)
-        self.dur_sigma = 0.25  # lognormal sigma
+        self.dur_sigma = 0.25
 
-        # Per-activity amount means (positive) and noise
         base_amt = 80.0 + 40.0 * self.rng.rand(self.A) + 15.0 * (np.arange(self.A) % 4)
         self.amt_means = base_amt * (1.0 + 0.10 * variant_id)
-        self.amt_sigma = 0.40  # lognormal sigma
+        self.amt_sigma = 0.40
 
-        # Resource preference per activity (prob vector over resources)
         self.res_pref = self._build_resource_preferences(variant_id)
 
     def _build_transition_matrix(self, variant_id: int) -> np.ndarray:
         A = self.A
         mat = np.zeros((A, A), dtype=float)
-        # forward edge weight (i -> i+1)
         fwd = 0.60 + 0.05 * self.rng.rand()
-        skip = 0.12 + 0.03 * (variant_id % 3)  # (i -> i+2)
+        skip = 0.12 + 0.03 * (variant_id % 3)
         self_loop = 0.04 + 0.02 * self.rng.rand()
-        # remaining mass spread to two random cross edges per row
         for i in range(A):
             mat[i, (i + 1) % A] += fwd
             mat[i, (i + 2) % A] += skip
             mat[i, i] += self_loop
-            # add two random cross edges
             others = [j for j in range(A) if j not in {(i + 1) % A, (i + 2) % A, i}]
             self.rng.shuffle(others)
             w_remaining = 1.0 - (fwd + skip + self_loop)
@@ -112,14 +84,10 @@ class ProcSimModel:
             w2 = w_remaining - w1
             mat[i, others[0]] += w1
             mat[i, others[1]] += w2
-        # Normalize defensively
         mat = mat / mat.sum(axis=1, keepdims=True)
         return mat
 
     def _build_resource_preferences(self, variant_id: int) -> np.ndarray:
-        """
-        Bias an activity toward resources in one 'preferred' group; add noise.
-        """
         A, R, G = self.A, self.R, self.G
         res_group = self.resource_group
         prefs = np.zeros((A, R), dtype=float)
@@ -148,10 +116,6 @@ class ProcSimModel:
         return float(self.rng.lognormal(mean=mu, sigma=self.amt_sigma))
 
     def generate_trace(self, max_len: int) -> List[Dict[str, Any]]:
-        """
-        Returns a list of dict events with keys:
-          activity, resource, group, delta_t, amount
-        """
         L = self.rng.randint(8, max(9, max_len + 1))
         a = int(self.rng.randint(0, self.A))
         events = []
@@ -171,25 +135,18 @@ class ProcSimModel:
         return events
 
 
-# ----------------------------
-# Episode generator (training)
-# ----------------------------
 class EpisodeGenerator:
     """
-    Builds a dataset by mixing several ProcSimModel variants.
-    Events expose categorical features [activity, resource, group],
-    a numeric vector containing at least [amount], and time features
-    [log_delta_t, normalized_progress].
-
-    create_episode() assembles K-shot IO-style episodes compatible
-    with the downstream model.
+    Dataset made of multiple ProcSimModel variants. Categorical features:
+    [activity, resource, group]; numeric: [amount, amount_norm, ...]; time: [log_dt, progress].
+    Adds dense per-event supervision to accelerate/regularize training.
     """
     def __init__(
         self,
         num_cases: int,
         max_case_len: int,
-        num_cat_features: int,   # expected to be 3 (activity, resource, group)
-        num_num_features: int,   # >= 1 (amount plus optional extras/zeros)
+        num_cat_features: int,   # >=3 (activity, resource, group)
+        num_num_features: int,   # >=1 (amount + optional)
         n_models: int = 3,
         num_resources: int = 12,
         num_groups: int = 4,
@@ -201,7 +158,7 @@ class EpisodeGenerator:
 
         self.num_cases = num_cases
         self.max_case_len = max_case_len
-        self.num_cat_features = 3  # exactly: activity, resource, group
+        self.num_cat_features = 3
         self.num_num_features = num_num_features
         self.time_feat_dim = 2
 
@@ -209,7 +166,6 @@ class EpisodeGenerator:
         self.num_groups = num_groups
         self.cat_cardinalities = [ACTIVITY_VOCAB_SIZE, self.num_resources, self.num_groups]
 
-        # Build several simulation models with different dynamics
         self.models = [
             ProcSimModel(
                 variant_id=i,
@@ -222,27 +178,22 @@ class EpisodeGenerator:
         ]
 
         self.dataset = self._generate_dataset()
-        self._finalize_time_buckets()  # compute max remaining time for discretization
+        self._finalize_time_buckets()
 
-    # ---- helpers ----
     def _build_num_feats(self, amount: float, case_amount_mean: float) -> List[float]:
         feats = [amount]
-        # a simple normalized amount as a second informative numeric (if needed)
         if self.num_num_features > 1:
             feats.append(amount / (case_amount_mean + 1e-8))
-        # pad up to requested size
         if self.num_num_features > len(feats):
             feats += [0.0] * (self.num_num_features - len(feats))
         return feats[: self.num_num_features]
 
     def _generate_dataset(self) -> List[List[Dict[str, Any]]]:
         dataset: List[List[Dict[str, Any]]] = []
-        # roughly balanced across models
         per_model = max(1, self.num_cases // max(1, len(self.models)))
         for m in self.models:
             for _ in range(per_model):
                 raw = m.generate_trace(self.max_case_len)
-                # skip too-short traces
                 if len(raw) < 3:
                     continue
                 total_time = sum(ev["delta_t"] for ev in raw)
@@ -268,13 +219,11 @@ class EpisodeGenerator:
                         "remaining_time": remaining_time,
                     })
                 dataset.append(events)
-        # fallback if per_model truncated
         if len(dataset) == 0:
             raise RuntimeError("No traces generated; reduce constraints or check simulator.")
         return dataset
 
     def _finalize_time_buckets(self):
-        # robust scale for remaining-time discretization (95th percentile)
         all_rem = [ev["remaining_time"] for case in self.dataset for ev in case]
         q95 = float(np.percentile(all_rem, 95)) if len(all_rem) > 0 else self.max_case_len * 3.0
         self.max_remaining_time = max(q95, 1e-3)
@@ -284,16 +233,17 @@ class EpisodeGenerator:
         return max(0, min(TIME_BUCKET_VOCAB_SIZE - 1, b))
 
     def bucket_to_continuous(self, bucket: int) -> float:
-        """Return the midpoint (continuous) value for a predicted bucket."""
         bucket = max(0, min(TIME_BUCKET_VOCAB_SIZE - 1, int(bucket)))
         width = self.max_remaining_time / TIME_BUCKET_VOCAB_SIZE
         return (bucket + 0.5) * width
 
-    # ---- episode assembly (IO-style) ----
     def create_episode(self, k_shots: int, task: str) -> Dict[str, Any]:
         """
-        [<TASK>] (support cases with inline <LABEL> y) x K  [<CASE_SEP>] [<QUERY>] (query prefix ... <LABEL>)
+        [<TASK>] (support K cases with inline <LABEL> y)  [<CASE_SEP>] [<QUERY>] (prefix ... <LABEL>)
+        Also returns dense per-event targets (next activity & remaining time bucket).
         """
+        import copy
+
         sampled_cases = random.sample(self.dataset, k_shots + 1)
         support_cases, query_case = sampled_cases[:k_shots], sampled_cases[-1]
 
@@ -302,47 +252,74 @@ class EpisodeGenerator:
         num_feature_list: List[List[float]] = []
         time_feature_list: List[List[float]] = []
 
+        # Dense supervision holders
+        dense_next_targets: List[int] = []
+        dense_time_targets: List[int] = []
+        dense_mask_next: List[int] = []
+        dense_mask_time: List[int] = []
+
         def pad_features():
             cat_feature_list.append([0] * self.num_cat_features)
             num_feature_list.append([0.0] * self.num_num_features)
             time_feature_list.append([0.0] * self.time_feat_dim)
 
+        def pad_dense():
+            dense_next_targets.append(0)
+            dense_time_targets.append(0)
+            dense_mask_next.append(0)
+            dense_mask_time.append(0)
+
         # Task token
         episode_tokens.append(SPECIAL_TOKENS[f'<TASK_{task.upper()}>'])
-        pad_features()
+        pad_features(); pad_dense()
 
         # --- support cases
         for case in support_cases:
-            episode_tokens.append(SPECIAL_TOKENS['<CASE_SEP>']); pad_features()
+            episode_tokens.append(SPECIAL_TOKENS['<CASE_SEP>']); pad_features(); pad_dense()
             prefix_len = random.randint(2, len(case) - 1)
 
             for i in range(prefix_len):
+                ev = case[i]
                 episode_tokens.append(SPECIAL_TOKENS['<EVENT>'])
-                cat_feature_list.append(case[i]['cat_feats'])
-                num_feature_list.append(case[i]['num_feats'])
-                time_feature_list.append(case[i]['time_feats'])
+                cat_feature_list.append(ev['cat_feats'])
+                num_feature_list.append(ev['num_feats'])
+                time_feature_list.append(ev['time_feats'])
 
-            episode_tokens.append(SPECIAL_TOKENS['<LABEL>']); pad_features()
+                # dense labels at every event in support
+                dense_next_targets.append(ev['next_activity'])
+                dense_time_targets.append(self._discretize_time(ev['remaining_time']))
+                dense_mask_next.append(1)
+                dense_mask_time.append(1)
+
+            episode_tokens.append(SPECIAL_TOKENS['<LABEL>']); pad_features(); pad_dense()
             if task == 'next_activity':
                 label = case[prefix_len - 1]['next_activity']
                 label_token = len(SPECIAL_TOKENS) + label
             else:
                 rem = case[prefix_len - 1]['remaining_time']
                 label_token = len(SPECIAL_TOKENS) + ACTIVITY_VOCAB_SIZE + self._discretize_time(rem)
-            episode_tokens.append(label_token); pad_features()
+            episode_tokens.append(label_token); pad_features(); pad_dense()
 
         # --- query case
-        episode_tokens.append(SPECIAL_TOKENS['<CASE_SEP>']); pad_features()
-        episode_tokens.append(SPECIAL_TOKENS['<QUERY>']); pad_features()
+        episode_tokens.append(SPECIAL_TOKENS['<CASE_SEP>']); pad_features(); pad_dense()
+        episode_tokens.append(SPECIAL_TOKENS['<QUERY>']); pad_features(); pad_dense()
 
         q_prefix_len = random.randint(2, len(query_case) - 1)
         for i in range(q_prefix_len):
+            ev = query_case[i]
             episode_tokens.append(SPECIAL_TOKENS['<EVENT>'])
-            cat_feature_list.append(query_case[i]['cat_feats'])
-            num_feature_list.append(query_case[i]['num_feats'])
-            time_feature_list.append(query_case[i]['time_feats'])
+            cat_feature_list.append(ev['cat_feats'])
+            num_feature_list.append(ev['num_feats'])
+            time_feature_list.append(ev['time_feats'])
 
-        episode_tokens.append(SPECIAL_TOKENS['<LABEL>']); pad_features()
+            # dense supervision on query prefix EXCEPT the last event to avoid leaking query target
+            is_last = (i == q_prefix_len - 1)
+            dense_next_targets.append(ev['next_activity'])
+            dense_time_targets.append(self._discretize_time(ev['remaining_time']))
+            dense_mask_next.append(0 if is_last else 1)
+            dense_mask_time.append(0 if is_last else 1)
+
+        episode_tokens.append(SPECIAL_TOKENS['<LABEL>']); pad_features(); pad_dense()
 
         if task == 'next_activity':
             query_true_cont = -1.0
@@ -363,12 +340,14 @@ class EpisodeGenerator:
             "query_true_token": query_true_token,
             "query_true_continuous": query_true_cont,
             "task": task,
+            # dense supervision
+            "dense_next_targets": dense_next_targets,
+            "dense_time_targets": dense_time_targets,
+            "dense_mask_next": dense_mask_next,
+            "dense_mask_time": dense_mask_time,
         }
 
 
-# ----------------------------
-# Collate
-# ----------------------------
 def collate_batch(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
     max_len = max(len(item['tokens']) for item in batch)
 
@@ -378,6 +357,15 @@ def collate_batch(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
     num_cat_features = len(batch[0]['cat_feats'][0])
     num_num_features = len(batch[0]['num_feats'][0])
     num_time_features = len(batch[0]['time_feats'][0])
+
+    # Optional dense supervision fields (present in training generator)
+    has_dense = ('dense_next_targets' in batch[0])
+
+    if has_dense:
+        pad_dense_next = []
+        pad_dense_time = []
+        pad_mask_next = []
+        pad_mask_time = []
 
     for item in batch:
         pad_len = max_len - len(item['tokens'])
@@ -390,7 +378,13 @@ def collate_batch(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         padded_num.append(item['num_feats'] + [[0.0] * num_num_features] * pad_len)
         padded_time.append(item['time_feats'] + [[0.0] * num_time_features] * pad_len)
 
-    return {
+        if has_dense:
+            pad_dense_next.append(item['dense_next_targets'] + [0] * pad_len)
+            pad_dense_time.append(item['dense_time_targets'] + [0] * pad_len)
+            pad_mask_next.append(item['dense_mask_next'] + [0] * pad_len)
+            pad_mask_time.append(item['dense_mask_time'] + [0] * pad_len)
+
+    out = {
         "tokens": torch.tensor(padded_tokens, dtype=torch.long),
         "loss_mask": torch.tensor(padded_loss_masks, dtype=torch.bool),
         "attention_mask": torch.tensor(attention_masks, dtype=torch.float),
@@ -402,10 +396,17 @@ def collate_batch(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         "tasks": [item['task'] for item in batch],
     }
 
+    if has_dense:
+        out.update({
+            "dense_next_targets": torch.tensor(pad_dense_next, dtype=torch.long),
+            "dense_time_targets": torch.tensor(pad_dense_time, dtype=torch.long),
+            "dense_mask_next": torch.tensor(pad_mask_next, dtype=torch.bool),
+            "dense_mask_time": torch.tensor(pad_mask_time, dtype=torch.bool),
+        })
 
-# ----------------------------
-# Demo
-# ----------------------------
+    return out
+
+
 if __name__ == '__main__':
     def print_episode_details(episode, rev_vocab):
         print("-" * 80)

@@ -14,9 +14,9 @@ D_MODEL = 256
 N_LAYERS = 6
 N_HEADS = 8
 
-# Updated: we now model [activity, resource, group]
+# [activity, resource, group]
 NUM_CAT_FEATURES = 3
-# Keep three numeric slots: [amount, amount_normalized, (padding)]
+# [amount, amount_norm, (padding)]
 NUM_NUM_FEATURES = 3
 NUM_TIME_FEATURES = 2
 
@@ -25,11 +25,12 @@ BATCH_SIZE = 32
 NUM_EPOCHS = 800
 K_SHOTS = 4
 
-AUX_SUPPORT_LOSS_WEIGHT = 1.0  # weight for auxiliary loss on support <LABEL> positions
+# Loss weights
+AUX_SUPPORT_LOSS_WEIGHT = 1.0   # support <LABEL> positions
+DENSE_LOSS_WEIGHT = 1.0         # dense per-<EVENT> positions
 
 
 def train():
-    # Reproducibility (optional)
     torch.manual_seed(42)
     random.seed(42)
 
@@ -41,7 +42,7 @@ def train():
         max_case_len=50,
         num_cat_features=NUM_CAT_FEATURES,
         num_num_features=NUM_NUM_FEATURES,
-        n_models=4,                      # <- multiple simulation variants
+        n_models=4,
     )
 
     model = IOTransformer(
@@ -55,7 +56,8 @@ def train():
 
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, betas=(0.9, 0.98), weight_decay=0.01)
     scheduler = CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS, eta_min=1e-6)
-    criterion = nn.CrossEntropyLoss()
+    # a bit of label smoothing helps generalization
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
 
     print("Starting training...")
     for epoch in range(NUM_EPOCHS):
@@ -136,8 +138,32 @@ def train():
 
         support_loss = support_loss_next + support_loss_time
 
+        # ===== Dense per-<EVENT> supervision =====
+        if 'dense_next_targets' in batch:
+            dense_mask_next = batch['dense_mask_next']  # [B,T] bool
+            dense_mask_time = batch['dense_mask_time']  # [B,T] bool
+
+            dense_logits_next = activity_logits[dense_mask_next]        # [Nd_next, |A|]
+            dense_logits_time = time_logits[dense_mask_time]            # [Nd_time, |B|]
+
+            if dense_logits_next.numel() > 0:
+                dense_targets_next = batch['dense_next_targets'][dense_mask_next]  # already [0..|A|-1]
+                dense_loss_next = criterion(dense_logits_next, dense_targets_next)
+            else:
+                dense_loss_next = torch.tensor(0.0, device=device)
+
+            if dense_logits_time.numel() > 0:
+                dense_targets_time = batch['dense_time_targets'][dense_mask_time]  # already [0..|B|-1]
+                dense_loss_time = criterion(dense_logits_time, dense_targets_time)
+            else:
+                dense_loss_time = torch.tensor(0.0, device=device)
+
+            dense_loss = dense_loss_next + dense_loss_time
+        else:
+            dense_loss = torch.tensor(0.0, device=device)
+
         # Total loss
-        loss = query_loss + AUX_SUPPORT_LOSS_WEIGHT * support_loss
+        loss = query_loss + AUX_SUPPORT_LOSS_WEIGHT * support_loss + DENSE_LOSS_WEIGHT * dense_loss
 
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -150,10 +176,16 @@ def train():
                 n_q_time = int(query_mask_time.sum().item())
                 n_s_next = int(support_mask_next.sum().item())
                 n_s_time = int(support_mask_time.sum().item())
+                if 'dense_mask_next' in batch:
+                    n_d_next = int(batch['dense_mask_next'].sum().item())
+                    n_d_time = int(batch['dense_mask_time'].sum().item())
+                else:
+                    n_d_next = n_d_time = 0
             print(
                 f"Epoch [{epoch + 1}/{NUM_EPOCHS}] "
                 f"Loss: {loss.item():.4f} | Q(next:{n_q_next}, time:{n_q_time})={query_loss.item():.4f} "
                 f"| S(next:{n_s_next}, time:{n_s_time})={support_loss.item():.4f} "
+                f"| D(next:{n_d_next}, time:{n_d_time})={dense_loss.item():.4f} "
                 f"| LR: {scheduler.get_last_lr()[0]:.6f}"
             )
 

@@ -8,10 +8,9 @@ from data_generator import SPECIAL_TOKENS
 
 class EventEmbedder(nn.Module):
     """
-    Builds token embeddings. For <EVENT> tokens, replace the token embedding with a
-    learned projection of (categorical + numeric + time) features. For all tokens,
-    add a learned 'type' embedding (event/label/query/task/etc.) to help the model
-    disambiguate roles.
+    Builds token embeddings. For <EVENT> tokens, ADD (not replace) a learned projection
+    of (categorical + numeric + time) features to the base token embedding. For all tokens,
+    add a learned 'type' embedding. Numeric/time streams are LayerNorm'ed before MLPs.
     """
     def __init__(
         self,
@@ -40,6 +39,10 @@ class EventEmbedder(nn.Module):
             [nn.Embedding(card, d_cat) for card in cat_cardinalities]
         )
 
+        # Normalization before MLPs to stabilize scale
+        self.num_norm = nn.LayerNorm(num_num_features)
+        self.time_norm = nn.LayerNorm(num_time_features)
+
         # Numeric + time MLPs (to half-width)
         hid = max(32, d_model // 2)
         self.num_mlp = nn.Sequential(
@@ -61,6 +64,10 @@ class EventEmbedder(nn.Module):
         # 0=other/pad, 1=EVENT, 2=LABEL (the <LABEL> marker), 3=QUERY,
         # 4=TASK, 5=CASE_SEP, 6=LABEL_VALUE (the token AFTER <LABEL> in support)
         self.type_embed = nn.Embedding(7, d_model)
+
+        # Learnable scales to balance contributions
+        self.event_scale = nn.Parameter(torch.tensor(1.0))
+        self.type_scale = nn.Parameter(torch.tensor(1.0))
 
         self.dropout = nn.Dropout(dropout)
 
@@ -99,10 +106,10 @@ class EventEmbedder(nn.Module):
         """
         B, T = token_ids.shape
 
-        # Base token embeddings (for non-event tokens)
+        # Base token embeddings for all tokens
         base_emb = self.token_embed(token_ids)  # [B, T, d_model]
 
-        # Build event feature embedding for <EVENT> positions
+        # Event feature embedding for <EVENT> positions
         if self.num_cat > 0:
             cat_parts = []
             for i, emb in enumerate(self.cat_embs):
@@ -111,18 +118,19 @@ class EventEmbedder(nn.Module):
         else:
             cat_concat = torch.zeros(B, T, 0, device=token_ids.device)
 
-        num_emb = self.num_mlp(num_feats)    # [B, T, hid]
-        time_emb = self.time_mlp(time_feats) # [B, T, hid]
+        # Normalize before MLPs for stability
+        num_emb = self.num_mlp(self.num_norm(num_feats))    # [B, T, hid]
+        time_emb = self.time_mlp(self.time_norm(time_feats)) # [B, T, hid]
 
         event_feature_emb = self.event_proj(torch.cat([cat_concat, num_emb, time_emb], dim=-1))
 
-        # Replace token embedding at <EVENT> positions
-        is_event = (token_ids == SPECIAL_TOKENS['<EVENT>']).unsqueeze(-1)  # [B,T,1]
-        mixed = torch.where(is_event, event_feature_emb, base_emb)
+        # ADD event features at <EVENT> positions (gated), don't replace
+        is_event = (token_ids == SPECIAL_TOKENS['<EVENT>']).unsqueeze(-1).float()  # [B,T,1]
+        mixed = base_emb + self.event_scale * is_event * event_feature_emb
 
-        # Add type embeddings to every token
+        # Add type embeddings to every token (scaled)
         type_ids = self._build_type_ids(token_ids)
-        mixed = mixed + self.type_embed(type_ids)
+        mixed = mixed + self.type_scale * self.type_embed(type_ids)
 
         return self.dropout(mixed)  # [B, T, d_model]
 
