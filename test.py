@@ -20,11 +20,10 @@ def evaluate_model(model, generator, k_shots, task, n_episodes=100):
         for _ in range(n_episodes):
             episode = generator.create_episode(k_shots, task)
 
-            # FIXED: Get the index of the <LABEL> token *before* padding.
-            # Reading from [-1] is incorrect for padded sequences.
+            # After fixes, the final token is the query <LABEL>; compute logits at that position.
             label_idx = len(episode['tokens']) - 1
 
-            batch = collate_batch([episode])  # Batch size of 1 for evaluation
+            batch = collate_batch([episode])  # Batch size = 1
 
             for key in batch:
                 if isinstance(batch[key], torch.Tensor):
@@ -32,20 +31,17 @@ def evaluate_model(model, generator, k_shots, task, n_episodes=100):
 
             activity_logits, time_logits = model(batch)
 
-            # Get the logits at the correct query <LABEL> position
             query_logits = activity_logits[0, label_idx, :] if task == 'next_activity' else time_logits[0, label_idx, :]
 
             prediction = torch.argmax(query_logits).item()
 
             if task == 'next_activity':
-                # Target token needs to be mapped to head's vocab
                 true_label = batch['query_true_tokens'].item() - len(SPECIAL_TOKENS)
                 if prediction == true_label:
                     total_correct += 1
             else:  # remaining_time
-                # Convert prediction bucket back to continuous value for MAE
-                # This is an approximation using the bucket center
-                max_rem_time = generator.max_case_len * 5.0
+                # Convert prediction bucket back to continuous value (bucket midpoint)
+                max_rem_time = generator.max_case_len * 3.0
                 bucket_width = max_rem_time / 50
                 predicted_time = (prediction + 0.5) * bucket_width
 
@@ -66,17 +62,16 @@ def run_evaluation():
     print("--- Starting Evaluation ---")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # 1. Initialize a new data generator for the test set
+    # Test set generator
     test_generator = EpisodeGenerator(
-        num_cases=200, max_case_len=50,
+        num_cases=300, max_case_len=50,
         num_cat_features=NUM_CAT_FEATURES,
         num_num_features=NUM_NUM_FEATURES
     )
 
-    # 2. Load the trained model
+    # Load the trained model
     model = IOTransformer(
         d_model=D_MODEL, n_layers=N_LAYERS, n_heads=N_HEADS,
-        # FIXED: Pass feature dimensions to the model
         cat_cardinalities=test_generator.cat_cardinalities,
         num_num_features=NUM_NUM_FEATURES,
         num_time_features=NUM_TIME_FEATURES
