@@ -8,9 +8,15 @@ from data_generator import SPECIAL_TOKENS
 
 class EventEmbedder(nn.Module):
     """
-    Builds token embeddings. For <EVENT> tokens, ADD (not replace) a learned projection
-    of (categorical + numeric + time) features to the base token embedding. For all tokens,
-    add a learned 'type' embedding. Numeric/time streams are LayerNorm'ed before MLPs.
+    Token embeddings with rich event features.
+
+    For <EVENT> tokens, we ADD (not replace) a learned projection of
+    (categorical + numeric + time) features to the base token embedding.
+    We also add:
+      - type embeddings (event/label/query/task/etc.)
+      - case-id embeddings computed from <CASE_SEP> markers
+
+    Numeric/time streams are LayerNorm'ed before their MLPs for stability.
     """
     def __init__(
         self,
@@ -21,6 +27,7 @@ class EventEmbedder(nn.Module):
         num_time_features: int,
         d_cat: int = 64,
         dropout: float = 0.1,
+        max_cases: int = 32,
     ):
         super().__init__()
         self.d_model = d_model
@@ -28,8 +35,9 @@ class EventEmbedder(nn.Module):
         self.num_time_features = num_time_features
         self.num_cat = len(cat_cardinalities)
         self.d_cat = d_cat
+        self.max_cases = max_cases
 
-        # Token embedding for all non-event tokens (specials + label values)
+        # Token embedding for all tokens (specials + class tokens)
         self.token_embed = nn.Embedding(
             vocab_size, d_model, padding_idx=SPECIAL_TOKENS['<PAD>']
         )
@@ -60,21 +68,22 @@ class EventEmbedder(nn.Module):
             nn.LayerNorm(d_model),
         )
 
-        # Richer token type embeddings:
+        # Token type embeddings:
         # 0=other/pad, 1=EVENT, 2=LABEL (the <LABEL> marker), 3=QUERY,
-        # 4=TASK, 5=CASE_SEP, 6=LABEL_VALUE (the token AFTER <LABEL> in support)
+        # 4=TASK, 5=CASE_SEP, 6=LABEL_VALUE (token AFTER <LABEL> in support)
         self.type_embed = nn.Embedding(7, d_model)
+
+        # Case id embedding (computed from cumsum of <CASE_SEP>)
+        self.case_embed = nn.Embedding(self.max_cases, d_model)
 
         # Learnable scales to balance contributions
         self.event_scale = nn.Parameter(torch.tensor(1.0))
         self.type_scale = nn.Parameter(torch.tensor(1.0))
+        self.case_scale = nn.Parameter(torch.tensor(1.0))
 
         self.dropout = nn.Dropout(dropout)
 
     def _build_type_ids(self, token_ids: torch.Tensor) -> torch.Tensor:
-        """
-        Map token ids to coarse types to ease the model's job.
-        """
         B, T = token_ids.shape
         type_ids = torch.zeros_like(token_ids)
 
@@ -87,7 +96,6 @@ class EventEmbedder(nn.Module):
         is_case_sep = token_ids == SPECIAL_TOKENS['<CASE_SEP>']
         is_label_value = token_ids >= len(SPECIAL_TOKENS)
 
-        type_ids = type_ids + 0  # other/pad default = 0
         type_ids = torch.where(is_event, torch.full_like(type_ids, 1), type_ids)
         type_ids = torch.where(is_label, torch.full_like(type_ids, 2), type_ids)
         type_ids = torch.where(is_query, torch.full_like(type_ids, 3), type_ids)
@@ -96,6 +104,18 @@ class EventEmbedder(nn.Module):
         type_ids = torch.where(is_label_value, torch.full_like(type_ids, 6), type_ids)
 
         return type_ids
+
+    def _compute_case_ids(self, token_ids: torch.Tensor) -> torch.Tensor:
+        """
+        Case ids are computed as the cumulative count of <CASE_SEP> tokens.
+        The initial tokens (before the first <CASE_SEP>) have case_id = 0,
+        first case after that has id=1, etc. Clamped to [0, max_cases-1].
+        """
+        B, T = token_ids.shape
+        is_sep = (token_ids == SPECIAL_TOKENS['<CASE_SEP>']).to(torch.long)  # [B,T]
+        case_ids = torch.cumsum(is_sep, dim=1)  # increments at each separator
+        case_ids = case_ids.clamp(max=self.max_cases - 1)
+        return case_ids  # [B,T] ints in [0, max_cases-1]
 
     def forward(self, token_ids, cat_feats, num_feats, time_feats):
         """
@@ -111,15 +131,13 @@ class EventEmbedder(nn.Module):
 
         # Event feature embedding for <EVENT> positions
         if self.num_cat > 0:
-            cat_parts = []
-            for i, emb in enumerate(self.cat_embs):
-                cat_parts.append(emb(cat_feats[:, :, i]))  # [B, T, d_cat]
+            cat_parts = [emb(cat_feats[:, :, i]) for i, emb in enumerate(self.cat_embs)]
             cat_concat = torch.cat(cat_parts, dim=-1)  # [B, T, num_cat*d_cat]
         else:
             cat_concat = torch.zeros(B, T, 0, device=token_ids.device)
 
-        # Normalize before MLPs for stability
-        num_emb = self.num_mlp(self.num_norm(num_feats))    # [B, T, hid]
+        # Normalize numeric/time features before MLPs for stability
+        num_emb = self.num_mlp(self.num_norm(num_feats))     # [B, T, hid]
         time_emb = self.time_mlp(self.time_norm(time_feats)) # [B, T, hid]
 
         event_feature_emb = self.event_proj(torch.cat([cat_concat, num_emb, time_emb], dim=-1))
@@ -131,6 +149,10 @@ class EventEmbedder(nn.Module):
         # Add type embeddings to every token (scaled)
         type_ids = self._build_type_ids(token_ids)
         mixed = mixed + self.type_scale * self.type_embed(type_ids)
+
+        # Add case-id embeddings (computed from <CASE_SEP>)
+        case_ids = self._compute_case_ids(token_ids)  # [B,T]
+        mixed = mixed + self.case_scale * self.case_embed(case_ids)
 
         return self.dropout(mixed)  # [B, T, d_model]
 
