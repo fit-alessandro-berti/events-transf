@@ -1,16 +1,37 @@
 # data_generator.py
+#
+# Synthetic process-mining style data generator for training.
+# Explicitly models:
+#   - activity (categorical)
+#   - resource (categorical)
+#   - organizational group (categorical; derived from resource)
+#   - time between events (delta_t)
+#   - amount (numeric attribute)
+#
+# Multiple simulation models are created; each model generates many traces so
+# the learner must generalize across model changes.
 
-import torch
-import numpy as np
+import math
 import random
+from typing import List, Dict, Any, Tuple
 
-# Define special tokens and vocabulary
+import numpy as np
+import torch
+
+# ----------------------------
+# Vocabulary / Special Tokens
+# ----------------------------
 SPECIAL_TOKENS = {
-    '<PAD>': 0, '<TASK_NEXT_ACTIVITY>': 1, '<TASK_REMAINING_TIME>': 2,
-    '<CASE_SEP>': 3, '<LABEL>': 4, '<QUERY>': 5, '<EVENT>': 6
+    '<PAD>': 0,
+    '<TASK_NEXT_ACTIVITY>': 1,
+    '<TASK_REMAINING_TIME>': 2,
+    '<CASE_SEP>': 3,
+    '<LABEL>': 4,
+    '<QUERY>': 5,
+    '<EVENT>': 6,
 }
-ACTIVITY_VOCAB_SIZE = 10
-TIME_BUCKET_VOCAB_SIZE = 50
+ACTIVITY_VOCAB_SIZE = 10                 # fixed class space for "next activity"
+TIME_BUCKET_VOCAB_SIZE = 50              # discretization for remaining time
 VOCAB_SIZE = len(SPECIAL_TOKENS) + ACTIVITY_VOCAB_SIZE + TIME_BUCKET_VOCAB_SIZE
 
 
@@ -26,156 +47,271 @@ def get_reverse_vocab():
     return rev_vocab
 
 
+# ----------------------------
+# Simulation model
+# ----------------------------
+class ProcSimModel:
+    """
+    A light-weight process simulation model.
+
+    Parameters vary per 'variant_id' to encourage generalization:
+      - Transition dynamics between activities
+      - Per-activity duration scale (lognormal)
+      - Resource assignment preferences
+      - Amount emission statistics
+    """
+    def __init__(
+        self,
+        variant_id: int,
+        num_activities: int = ACTIVITY_VOCAB_SIZE,
+        num_resources: int = 12,
+        num_groups: int = 4,
+        seed: int = 0,
+    ):
+        self.rng = np.random.RandomState(seed + 17 * (variant_id + 1))
+        self.A = num_activities
+        self.R = num_resources
+        self.G = num_groups
+
+        # Resource -> group mapping (simple partition)
+        self.resource_group = np.array([(r + variant_id) % self.G for r in range(self.R)], dtype=int)
+
+        # Transition matrix with a strong forward bias and a variant-specific skip
+        self.trans_mat = self._build_transition_matrix(variant_id)
+
+        # Per-activity duration mean (in arbitrary time units) and noise
+        base_dur = 1.2 + 0.25 * self.rng.rand(self.A) + 0.15 * (np.arange(self.A) % 3)
+        self.dur_means = base_dur * (1.0 + 0.15 * variant_id)
+        self.dur_sigma = 0.25  # lognormal sigma
+
+        # Per-activity amount means (positive) and noise
+        base_amt = 80.0 + 40.0 * self.rng.rand(self.A) + 15.0 * (np.arange(self.A) % 4)
+        self.amt_means = base_amt * (1.0 + 0.10 * variant_id)
+        self.amt_sigma = 0.40  # lognormal sigma
+
+        # Resource preference per activity (prob vector over resources)
+        self.res_pref = self._build_resource_preferences(variant_id)
+
+    def _build_transition_matrix(self, variant_id: int) -> np.ndarray:
+        A = self.A
+        mat = np.zeros((A, A), dtype=float)
+        # forward edge weight (i -> i+1)
+        fwd = 0.60 + 0.05 * self.rng.rand()
+        skip = 0.12 + 0.03 * (variant_id % 3)  # (i -> i+2)
+        self_loop = 0.04 + 0.02 * self.rng.rand()
+        # remaining mass spread to two random cross edges per row
+        for i in range(A):
+            mat[i, (i + 1) % A] += fwd
+            mat[i, (i + 2) % A] += skip
+            mat[i, i] += self_loop
+            # add two random cross edges
+            others = [j for j in range(A) if j not in {(i + 1) % A, (i + 2) % A, i}]
+            self.rng.shuffle(others)
+            w_remaining = 1.0 - (fwd + skip + self_loop)
+            w1 = w_remaining * (0.35 + 0.3 * self.rng.rand())
+            w2 = w_remaining - w1
+            mat[i, others[0]] += w1
+            mat[i, others[1]] += w2
+        # Normalize defensively
+        mat = mat / mat.sum(axis=1, keepdims=True)
+        return mat
+
+    def _build_resource_preferences(self, variant_id: int) -> np.ndarray:
+        """
+        Bias an activity toward resources in one 'preferred' group; add noise.
+        """
+        A, R, G = self.A, self.R, self.G
+        res_group = self.resource_group
+        prefs = np.zeros((A, R), dtype=float)
+        for a in range(A):
+            preferred_group = (a + variant_id) % G
+            base = np.full(R, 0.1)
+            base[res_group == preferred_group] = 0.7
+            noise = 0.05 * self.rng.rand(R)
+            w = base + noise
+            w = np.maximum(w, 1e-6)
+            prefs[a] = w / w.sum()
+        return prefs
+
+    def _sample_next_activity(self, a_curr: int) -> int:
+        return int(self.rng.choice(self.A, p=self.trans_mat[a_curr]))
+
+    def _sample_resource_for_activity(self, a: int) -> int:
+        return int(self.rng.choice(self.R, p=self.res_pref[a]))
+
+    def _sample_delta_t(self, a: int) -> float:
+        mu = math.log(self.dur_means[a] + 1e-6)
+        return float(self.rng.lognormal(mean=mu, sigma=self.dur_sigma))
+
+    def _sample_amount(self, a: int) -> float:
+        mu = math.log(self.amt_means[a] + 1e-6)
+        return float(self.rng.lognormal(mean=mu, sigma=self.amt_sigma))
+
+    def generate_trace(self, max_len: int) -> List[Dict[str, Any]]:
+        """
+        Returns a list of dict events with keys:
+          activity, resource, group, delta_t, amount
+        """
+        L = self.rng.randint(8, max(9, max_len + 1))
+        a = int(self.rng.randint(0, self.A))
+        events = []
+        for _ in range(L):
+            r = self._sample_resource_for_activity(a)
+            g = int(self.resource_group[r])
+            delta_t = self._sample_delta_t(a)
+            amount = self._sample_amount(a)
+            events.append({
+                "activity": a,
+                "resource": r,
+                "group": g,
+                "delta_t": delta_t,
+                "amount": amount,
+            })
+            a = self._sample_next_activity(a)
+        return events
+
+
+# ----------------------------
+# Episode generator (training)
+# ----------------------------
 class EpisodeGenerator:
     """
-    Synthetic dataset generator with learnable structure.
+    Builds a dataset by mixing several ProcSimModel variants.
+    Events expose categorical features [activity, resource, group],
+    a numeric vector containing at least [amount], and time features
+    [log_delta_t, normalized_progress].
 
-    - First categorical feature = current activity in [0, ACTIVITY_VOCAB_SIZE-1].
-    - Second categorical feature (if present) = segment in [0, n_segments-1].
-    - A 'phase' (derived from normalized progress) influences transitions.
-    - next_activity is a function of (current_activity, segment, phase) with light noise.
-    - remaining_time correlates with normalized progress.
-
-    This makes both tasks (next activity and remaining time) learnable from the prefix.
+    create_episode() assembles K-shot IO-style episodes compatible
+    with the downstream model.
     """
-    def __init__(self, num_cases, max_case_len, num_cat_features, num_num_features,
-                 n_phases: int = 5, n_segments: int = 4, seed: int = 42):
-        self.num_cases = num_cases
-        self.max_case_len = max_case_len
-        self.num_cat_features = num_cat_features
-        self.num_num_features = num_num_features
-
-        # Time feature dim is fixed at 2: [log_delta_t, normalized_progress]
-        self.time_feat_dim = 2
-
-        # Make the first categorical feature the current activity (cardinality = ACTIVITY_VOCAB_SIZE)
-        # Remaining categorical features (if any) have cardinality 10.
-        self.cat_cardinalities = [ACTIVITY_VOCAB_SIZE] + [10] * max(0, num_cat_features - 1)
-
-        self.n_phases = n_phases
-        self.n_segments = n_segments
-
-        # Reproducibility
-        random.seed(seed)
+    def __init__(
+        self,
+        num_cases: int,
+        max_case_len: int,
+        num_cat_features: int,   # expected to be 3 (activity, resource, group)
+        num_num_features: int,   # >= 1 (amount plus optional extras/zeros)
+        n_models: int = 3,
+        num_resources: int = 12,
+        num_groups: int = 4,
+        seed: int = 42,
+    ):
+        assert num_cat_features >= 3, "num_cat_features must be >= 3 (activity, resource, group)"
+        self.rng = random.Random(seed)
         np.random.seed(seed)
 
+        self.num_cases = num_cases
+        self.max_case_len = max_case_len
+        self.num_cat_features = 3  # exactly: activity, resource, group
+        self.num_num_features = num_num_features
+        self.time_feat_dim = 2
+
+        self.num_resources = num_resources
+        self.num_groups = num_groups
+        self.cat_cardinalities = [ACTIVITY_VOCAB_SIZE, self.num_resources, self.num_groups]
+
+        # Build several simulation models with different dynamics
+        self.models = [
+            ProcSimModel(
+                variant_id=i,
+                num_activities=ACTIVITY_VOCAB_SIZE,
+                num_resources=self.num_resources,
+                num_groups=self.num_groups,
+                seed=seed + 100 * i,
+            )
+            for i in range(n_models)
+        ]
+
         self.dataset = self._generate_dataset()
+        self._finalize_time_buckets()  # compute max remaining time for discretization
 
-    # --- Utilities ---
+    # ---- helpers ----
+    def _build_num_feats(self, amount: float, case_amount_mean: float) -> List[float]:
+        feats = [amount]
+        # a simple normalized amount as a second informative numeric (if needed)
+        if self.num_num_features > 1:
+            feats.append(amount / (case_amount_mean + 1e-8))
+        # pad up to requested size
+        if self.num_num_features > len(feats):
+            feats += [0.0] * (self.num_num_features - len(feats))
+        return feats[: self.num_num_features]
 
-    def _transition(self, activity, segment, phase):
-        """
-        Deterministic + light-noise transition rule:
-        next = (activity + step) % ACTIVITY_VOCAB_SIZE
-        where step depends on segment and phase (both small integers).
-        """
-        base = 1 + (segment % 3)        # 1..3
-        phase_effect = (phase % 2)      # 0 or 1
-        step = base + phase_effect      # 1..4
+    def _generate_dataset(self) -> List[List[Dict[str, Any]]]:
+        dataset: List[List[Dict[str, Any]]] = []
+        # roughly balanced across models
+        per_model = max(1, self.num_cases // max(1, len(self.models)))
+        for m in self.models:
+            for _ in range(per_model):
+                raw = m.generate_trace(self.max_case_len)
+                # skip too-short traces
+                if len(raw) < 3:
+                    continue
+                total_time = sum(ev["delta_t"] for ev in raw)
+                cum_time = 0.0
+                case_amount_mean = float(np.mean([ev["amount"] for ev in raw]))
 
-        # small noise: 10% chance of adding +1 more step
-        if random.random() < 0.10:
-            step += 1
-        return (activity + step) % ACTIVITY_VOCAB_SIZE
+                events = []
+                for i, ev in enumerate(raw):
+                    progress = i / (len(raw) - 1)
+                    cum_time += ev["delta_t"]
+                    remaining_time = max(total_time - cum_time, 0.0)
+                    next_activity = raw[i + 1]["activity"] if i + 1 < len(raw) else ev["activity"]
 
-    def _discretize_time(self, time_value):
-        max_rem_time = self.max_case_len * 3.0  # scale consistent with avg durations below
-        bucket = int((time_value / max_rem_time) * (TIME_BUCKET_VOCAB_SIZE - 1))
-        return min(max(bucket, 0), TIME_BUCKET_VOCAB_SIZE - 1)
+                    cat_feats = [ev["activity"], ev["resource"], ev["group"]]
+                    num_feats = self._build_num_feats(ev["amount"], case_amount_mean)
+                    time_feats = [float(np.log(ev["delta_t"] + 1e-6)), progress]
 
-    def _generate_dataset(self):
-        dataset = []
-        for _ in range(self.num_cases):
-            case_len = random.randint(8, self.max_case_len)
-
-            # Segment used to control transition dynamics & average durations
-            segment = random.randint(0, self.n_segments - 1) if self.num_cat_features >= 2 else 0
-
-            # Start activity
-            activity = random.randint(0, ACTIVITY_VOCAB_SIZE - 1)
-
-            # Average duration depends on segment (so remaining_time isn't just event count)
-            avg_duration = 1.5 + 0.6 * segment  # 1.5, 2.1, 2.7, 3.3 for 4 segments
-
-            current_time = 0.0
-            events = []
-            for i in range(case_len):
-                # progress & phase
-                denom = max(case_len - 1, 1)
-                progress = i / denom  # 0..1
-                phase = min(int(progress * self.n_phases), self.n_phases - 1)
-
-                # delta time log-normal around segment-controlled average
-                delta_t = float(np.random.lognormal(mean=np.log(avg_duration + 1e-3), sigma=0.25))
-                current_time += delta_t
-
-                # categorical features
-                cat_feats = [activity]
-                if self.num_cat_features >= 2:
-                    cat_feats.append(segment)
-                # fill any remaining categorical dims
-                for _extra in range(self.num_cat_features - len(cat_feats)):
-                    # use phase (mod 10) to make it semi-informative but bounded to 10
-                    cat_feats.append(phase % 10)
-
-                # numeric features (choose informative ones first)
-                num_feats = [
-                    progress,                      # directly informative for remaining_time
-                    (phase + 1) / self.n_phases,   # coarse progress
-                    (activity + 1) / ACTIVITY_VOCAB_SIZE  # weakly tied to next activity
-                ]
-                # pad/truncate to requested dimension
-                if self.num_num_features <= len(num_feats):
-                    num_feats = num_feats[:self.num_num_features]
-                else:
-                    num_feats = num_feats + [0.0] * (self.num_num_features - len(num_feats))
-
-                # time features (log delta and normalized progress)
-                time_feats = [np.log(delta_t + 1e-6), progress]
-
-                # labels
-                next_activity_label = self._transition(activity, segment, phase)
-                remaining_time = (case_len - 1 - i) * avg_duration
-
-                events.append({
-                    'cat_feats': cat_feats,
-                    'num_feats': num_feats,
-                    'time_feats': time_feats,
-                    'next_activity': next_activity_label,
-                    'remaining_time': remaining_time
-                })
-
-                # advance activity for next event
-                activity = next_activity_label
-
-            dataset.append(events)
+                    events.append({
+                        "cat_feats": cat_feats,
+                        "num_feats": num_feats,
+                        "time_feats": time_feats,
+                        "next_activity": next_activity,
+                        "remaining_time": remaining_time,
+                    })
+                dataset.append(events)
+        # fallback if per_model truncated
+        if len(dataset) == 0:
+            raise RuntimeError("No traces generated; reduce constraints or check simulator.")
         return dataset
 
-    # --- Episode building (IO-style) ---
+    def _finalize_time_buckets(self):
+        # robust scale for remaining-time discretization (95th percentile)
+        all_rem = [ev["remaining_time"] for case in self.dataset for ev in case]
+        q95 = float(np.percentile(all_rem, 95)) if len(all_rem) > 0 else self.max_case_len * 3.0
+        self.max_remaining_time = max(q95, 1e-3)
 
-    def create_episode(self, k_shots, task):
+    def _discretize_time(self, time_value: float) -> int:
+        b = int((time_value / self.max_remaining_time) * (TIME_BUCKET_VOCAB_SIZE - 1))
+        return max(0, min(TIME_BUCKET_VOCAB_SIZE - 1, b))
+
+    def bucket_to_continuous(self, bucket: int) -> float:
+        """Return the midpoint (continuous) value for a predicted bucket."""
+        bucket = max(0, min(TIME_BUCKET_VOCAB_SIZE - 1, int(bucket)))
+        width = self.max_remaining_time / TIME_BUCKET_VOCAB_SIZE
+        return (bucket + 0.5) * width
+
+    # ---- episode assembly (IO-style) ----
+    def create_episode(self, k_shots: int, task: str) -> Dict[str, Any]:
         """
-        Builds an in-context episode:
-          [<TASK>]  (support: ... <LABEL> y) x K  [<CASE_SEP>] [<QUERY>] (query: ... <LABEL>)
-        NOTE: For the query, we DO NOT append the label token; the model must predict at <LABEL>.
+        [<TASK>] (support cases with inline <LABEL> y) x K  [<CASE_SEP>] [<QUERY>] (query prefix ... <LABEL>)
         """
         sampled_cases = random.sample(self.dataset, k_shots + 1)
         support_cases, query_case = sampled_cases[:k_shots], sampled_cases[-1]
 
-        episode_tokens = []
-        cat_feature_list, num_feature_list, time_feature_list = [], [], []
+        episode_tokens: List[int] = []
+        cat_feature_list: List[List[int]] = []
+        num_feature_list: List[List[float]] = []
+        time_feature_list: List[List[float]] = []
 
-        # Helper to pad features for non-event tokens
         def pad_features():
             cat_feature_list.append([0] * self.num_cat_features)
             num_feature_list.append([0.0] * self.num_num_features)
             time_feature_list.append([0.0] * self.time_feat_dim)
 
-        # Start with task token
+        # Task token
         episode_tokens.append(SPECIAL_TOKENS[f'<TASK_{task.upper()}>'])
         pad_features()
 
-        # --- Support cases (K-shot) ---
+        # --- support cases
         for case in support_cases:
             episode_tokens.append(SPECIAL_TOKENS['<CASE_SEP>']); pad_features()
             prefix_len = random.randint(2, len(case) - 1)
@@ -186,53 +322,54 @@ class EpisodeGenerator:
                 num_feature_list.append(case[i]['num_feats'])
                 time_feature_list.append(case[i]['time_feats'])
 
-            # place the label inline (IO-format)
             episode_tokens.append(SPECIAL_TOKENS['<LABEL>']); pad_features()
             if task == 'next_activity':
                 label = case[prefix_len - 1]['next_activity']
                 label_token = len(SPECIAL_TOKENS) + label
             else:
-                label = case[prefix_len - 1]['remaining_time']
-                label_token = len(SPECIAL_TOKENS) + ACTIVITY_VOCAB_SIZE + self._discretize_time(label)
-
-            # append the concrete label token for support
+                rem = case[prefix_len - 1]['remaining_time']
+                label_token = len(SPECIAL_TOKENS) + ACTIVITY_VOCAB_SIZE + self._discretize_time(rem)
             episode_tokens.append(label_token); pad_features()
 
-        # --- Query case (no target token appended) ---
+        # --- query case
         episode_tokens.append(SPECIAL_TOKENS['<CASE_SEP>']); pad_features()
         episode_tokens.append(SPECIAL_TOKENS['<QUERY>']); pad_features()
 
-        query_prefix_len = random.randint(2, len(query_case) - 1)
-        for i in range(query_prefix_len):
+        q_prefix_len = random.randint(2, len(query_case) - 1)
+        for i in range(q_prefix_len):
             episode_tokens.append(SPECIAL_TOKENS['<EVENT>'])
             cat_feature_list.append(query_case[i]['cat_feats'])
             num_feature_list.append(query_case[i]['num_feats'])
             time_feature_list.append(query_case[i]['time_feats'])
 
-        # place <LABEL> where the model must predict
         episode_tokens.append(SPECIAL_TOKENS['<LABEL>']); pad_features()
 
-        # store true target (not appended to tokens)
         if task == 'next_activity':
-            query_true_label_continuous = -1.0
-            query_true_token = len(SPECIAL_TOKENS) + query_case[query_prefix_len - 1]['next_activity']
+            query_true_cont = -1.0
+            query_true_token = len(SPECIAL_TOKENS) + query_case[q_prefix_len - 1]['next_activity']
         else:
-            query_true_label_continuous = query_case[query_prefix_len - 1]['remaining_time']
-            query_true_token = len(SPECIAL_TOKENS) + ACTIVITY_VOCAB_SIZE + self._discretize_time(
-                query_true_label_continuous)
+            query_true_cont = query_case[q_prefix_len - 1]['remaining_time']
+            bucket = self._discretize_time(query_true_cont)
+            query_true_token = len(SPECIAL_TOKENS) + ACTIVITY_VOCAB_SIZE + bucket
 
-        # loss only at the query <LABEL> position (the final token in this construction)
         loss_mask = [0] * (len(episode_tokens) - 1) + [1]
 
         return {
-            "tokens": episode_tokens, "loss_mask": loss_mask,
-            "cat_feats": cat_feature_list, "num_feats": num_feature_list, "time_feats": time_feature_list,
-            "query_true_token": query_true_token, "query_true_continuous": query_true_label_continuous,
-            "task": task
+            "tokens": episode_tokens,
+            "loss_mask": loss_mask,
+            "cat_feats": cat_feature_list,
+            "num_feats": num_feature_list,
+            "time_feats": time_feature_list,
+            "query_true_token": query_true_token,
+            "query_true_continuous": query_true_cont,
+            "task": task,
         }
 
 
-def collate_batch(batch):
+# ----------------------------
+# Collate
+# ----------------------------
+def collate_batch(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
     max_len = max(len(item['tokens']) for item in batch)
 
     padded_tokens, padded_loss_masks, attention_masks = [], [], []
@@ -262,15 +399,15 @@ def collate_batch(batch):
         "time_feats": torch.tensor(padded_time, dtype=torch.float),
         "query_true_tokens": torch.tensor([item['query_true_token'] for item in batch], dtype=torch.long),
         "query_true_continuous": torch.tensor([item['query_true_continuous'] for item in batch], dtype=torch.float),
-        "tasks": [item['task'] for item in batch]
+        "tasks": [item['task'] for item in batch],
     }
 
 
+# ----------------------------
+# Demo
+# ----------------------------
 if __name__ == '__main__':
-    # This block allows you to run the script directly to see what the data looks like.
-
     def print_episode_details(episode, rev_vocab):
-        """Prints a detailed, human-readable view of a single generated episode."""
         print("-" * 80)
         print(f"TASK: {episode['task']}")
         print(f"TOTAL TOKENS: {len(episode['tokens'])}")
@@ -279,16 +416,14 @@ if __name__ == '__main__':
         for i, token_id in enumerate(episode['tokens']):
             token_name = rev_vocab.get(token_id, f"ID_{token_id}")
             loss_marker = " <--- LOSS" if episode['loss_mask'][i] == 1 else ""
-
             print(f"[{i:03d}] Token: {token_name:<25}{loss_marker}")
-
             if token_name == '<EVENT>':
                 cat_f = episode['cat_feats'][i]
                 num_f = [f"{x:.2f}" for x in episode['num_feats'][i]]
                 time_f = [f"{x:.2f}" for x in episode['time_feats'][i]]
-                print(f"      - Cat Feats:  {cat_f}")
-                print(f"      - Num Feats:  {num_f}")
-                print(f"      - Time Feats: {time_f}")
+                print(f"      - Cat Feats [act,res,grp]: {cat_f}")
+                print(f"      - Num Feats [amount,...] : {num_f}")
+                print(f"      - Time Feats [log_dt, p] : {time_f}")
 
         true_token_id = episode['query_true_token']
         true_token_name = rev_vocab.get(true_token_id, f"ID_{true_token_id}")
@@ -298,26 +433,25 @@ if __name__ == '__main__':
             print(f"QUERY GROUND TRUTH (Continuous): {episode['query_true_continuous']:.2f}")
         print("-" * 80)
 
-
-    print("\n" + "="*25 + " GENERATING SAMPLE EPISODE " + "="*25)
-    # --- Configuration ---
+    print("\n" + "=" * 25 + " GENERATING SAMPLE EPISODES " + "=" * 25)
     K_SHOTS = 2
-    NUM_CAT_FEATURES = 2
+    NUM_CAT_FEATURES = 3
     NUM_NUM_FEATURES = 3
 
-    # --- Initialization ---
-    generator = EpisodeGenerator(
-        num_cases=100, max_case_len=20,
+    gen = EpisodeGenerator(
+        num_cases=60,
+        max_case_len=24,
         num_cat_features=NUM_CAT_FEATURES,
-        num_num_features=NUM_NUM_FEATURES
+        num_num_features=NUM_NUM_FEATURES,
+        n_models=4,
+        seed=7,
     )
-    reverse_vocab = get_reverse_vocab()
+    rev = get_reverse_vocab()
 
-    # --- Generate and Print ---
+    ep1 = gen.create_episode(K_SHOTS, 'next_activity')
+    ep2 = gen.create_episode(K_SHOTS, 'remaining_time')
+
     print("\n--- EXAMPLE 1: NEXT ACTIVITY ---")
-    next_activity_episode = generator.create_episode(k_shots=K_SHOTS, task='next_activity')
-    print_episode_details(next_activity_episode, reverse_vocab)
-
+    print_episode_details(ep1, rev)
     print("\n--- EXAMPLE 2: REMAINING TIME ---")
-    remaining_time_episode = generator.create_episode(k_shots=K_SHOTS, task='remaining_time')
-    print_episode_details(remaining_time_episode, reverse_vocab)
+    print_episode_details(ep2, rev)

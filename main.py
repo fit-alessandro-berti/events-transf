@@ -13,9 +13,13 @@ from model import IOTransformer
 D_MODEL = 256
 N_LAYERS = 6
 N_HEADS = 8
-NUM_CAT_FEATURES = 2
+
+# Updated: we now model [activity, resource, group]
+NUM_CAT_FEATURES = 3
+# Keep three numeric slots: [amount, amount_normalized, (padding)]
 NUM_NUM_FEATURES = 3
 NUM_TIME_FEATURES = 2
+
 LEARNING_RATE = 3e-4
 BATCH_SIZE = 32
 NUM_EPOCHS = 800
@@ -33,13 +37,17 @@ def train():
     print(f"Using device: {device}")
 
     generator = EpisodeGenerator(
-        num_cases=1200, max_case_len=50,
+        num_cases=1200,
+        max_case_len=50,
         num_cat_features=NUM_CAT_FEATURES,
-        num_num_features=NUM_NUM_FEATURES
+        num_num_features=NUM_NUM_FEATURES,
+        n_models=4,                      # <- multiple simulation variants
     )
 
     model = IOTransformer(
-        d_model=D_MODEL, n_layers=N_LAYERS, n_heads=N_HEADS,
+        d_model=D_MODEL,
+        n_layers=N_LAYERS,
+        n_heads=N_HEADS,
         cat_cardinalities=generator.cat_cardinalities,
         num_num_features=NUM_NUM_FEATURES,
         num_time_features=generator.time_feat_dim
@@ -53,7 +61,7 @@ def train():
     for epoch in range(NUM_EPOCHS):
         model.train()
 
-        # Mix tasks WITHIN a batch for more stable multitask training
+        # Mix tasks WITHIN a batch for multitask stability
         batch_episodes = []
         for _ in range(BATCH_SIZE):
             task = random.choice(['next_activity', 'remaining_time'])
@@ -102,15 +110,12 @@ def train():
         query_loss = query_loss_next + query_loss_time
 
         # ===== Auxiliary support loss at ALL support <LABEL> positions =====
-        # support <LABEL> positions are the <LABEL> tokens EXCEPT the final one in each episode
         label_token_id = SPECIAL_TOKENS['<LABEL>']
         label_positions = (tokens == label_token_id)                   # [B,T]
         support_label_mask = label_positions & (~loss_mask)            # [B,T]
 
-        # For those positions, target = the NEXT token (label value token)
         next_token_ids = torch.roll(tokens, shifts=-1, dims=1)         # [B,T]
 
-        # Split by task type
         support_mask_next = support_label_mask & is_next.unsqueeze(1)
         support_mask_time = support_label_mask & is_time.unsqueeze(1)
 
@@ -141,7 +146,6 @@ def train():
 
         if (epoch + 1) % 50 == 0:
             with torch.no_grad():
-                # Simple diagnostics
                 n_q_next = int(query_mask_next.sum().item())
                 n_q_time = int(query_mask_time.sum().item())
                 n_s_next = int(support_mask_next.sum().item())
