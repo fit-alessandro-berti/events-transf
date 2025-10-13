@@ -10,7 +10,6 @@ class IOTransformer(nn.Module):
     def __init__(self, d_model, n_layers, n_heads, cat_cardinalities, num_num_features, num_time_features, dropout=0.1):
         super().__init__()
 
-        # FIXED: Initialize the new embedder with feature dimensions
         self.embedder = EventEmbedder(
             vocab_size=VOCAB_SIZE, d_model=d_model, cat_cardinalities=cat_cardinalities,
             num_num_features=num_num_features, num_time_features=num_time_features
@@ -27,7 +26,6 @@ class IOTransformer(nn.Module):
         return torch.triu(torch.full((sz, sz), float('-inf'), device=device), diagonal=1)
 
     def forward(self, batch):
-        # FIXED: Receive the full batch with feature tensors
         token_ids = batch['tokens']
         cat_feats = batch['cat_feats']
         num_feats = batch['num_feats']
@@ -39,10 +37,10 @@ class IOTransformer(nn.Module):
 
         causal_mask = self._generate_causal_mask(seq_len, device)
 
-        # FIXED: Pass all feature tensors to the embedder
         x_emb = self.embedder(token_ids, cat_feats, num_feats, time_feats)
 
-        h = self.backbone(x_emb, tgt_mask=causal_mask, padding_mask=padding_mask)
+        # FIXED: Changed keyword argument from 'tgt_mask' to 'attn_mask'
+        h = self.backbone(x_emb, attn_mask=causal_mask, padding_mask=padding_mask)
 
         activity_logits = self.next_activity_head(h)
         time_logits = self.remaining_time_head(h)
