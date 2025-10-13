@@ -13,7 +13,7 @@ from data_generator import (
     get_reverse_vocab,
 )
 from model import IOTransformer
-from main import D_MODEL, N_LAYERS, N_HEADS, NUM_NUM_FEATURES, NUM_TIME_FEATURES
+from main import D_MODEL, N_LAYERS, N_HEADS, NUM_NUM_FEATURES  # use generator for time dim
 
 # Optional XES generator
 try:
@@ -32,6 +32,25 @@ class Colors:
     RESET = '\033[0m'    # Reset to default color
 
 
+def set_seeds(seed: int = 2027):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def _query_index_from_mask(batch) -> int:
+    """
+    Robustly get the (single) query <LABEL> index using the loss_mask.
+    """
+    mask = batch['loss_mask'][0]  # [T]
+    pos = torch.nonzero(mask, as_tuple=False).squeeze(-1)
+    if pos.numel() == 0:
+        raise RuntimeError("No query position found in loss_mask.")
+    return int(pos[-1].item())
+
+
 def evaluate_model(model, generator, k_shots, task, n_episodes=100):
     """Evaluates the model for a given number of shots and task."""
     model.eval()
@@ -39,17 +58,21 @@ def evaluate_model(model, generator, k_shots, task, n_episodes=100):
 
     total_correct = 0
     total_mae = 0.0
+    total_bucket_correct = 0  # for remaining_time classification view
     total_count = 0
 
     with torch.no_grad():
         for _ in range(n_episodes):
             episode = generator.create_episode(k_shots, task)
-            label_idx = len(episode['tokens']) - 1  # query <LABEL> is final token
-
             batch = collate_batch([episode])  # Batch size = 1
+
+            # Move to device
             for key in batch:
                 if isinstance(batch[key], torch.Tensor):
                     batch[key] = batch[key].to(device)
+
+            # Locate the true query position from mask (more robust than "last token")
+            label_idx = _query_index_from_mask(batch)
 
             activity_logits, time_logits = model(batch)
             query_logits = activity_logits[0, label_idx, :] if task == 'next_activity' else time_logits[0, label_idx, :]
@@ -61,7 +84,11 @@ def evaluate_model(model, generator, k_shots, task, n_episodes=100):
                 if prediction == true_label:
                     total_correct += 1
             else:
-                # Use the generator's bucket->continuous mapping
+                # Classification view (bucket accuracy)
+                true_bucket = batch['query_true_tokens'].item() - (len(SPECIAL_TOKENS) + ACTIVITY_VOCAB_SIZE)
+                if prediction == true_bucket:
+                    total_bucket_correct += 1
+                # Regression view (MAE via bucket midpoint on THIS generator's scale)
                 predicted_time = generator.bucket_to_continuous(prediction)
                 true_time = batch['query_true_continuous'].item()
                 total_mae += abs(predicted_time - true_time)
@@ -73,7 +100,8 @@ def evaluate_model(model, generator, k_shots, task, n_episodes=100):
         return {"accuracy": accuracy}
     else:
         mae = total_mae / max(1, total_count)
-        return {"mae": mae}
+        bucket_acc = total_bucket_correct / max(1, total_count)
+        return {"mae": mae, "bucket_acc": bucket_acc}
 
 
 def show_prediction_example(model, generator, k_shots, task, rev_vocab):
@@ -93,8 +121,8 @@ def show_prediction_example(model, generator, k_shots, task, rev_vocab):
 
         activity_logits, time_logits = model(batch)
 
-        # The query <LABEL> is the last token
-        label_idx = len(episode['tokens']) - 1
+        # Find query position from mask (robust)
+        label_idx = _query_index_from_mask(batch)
         query_logits = activity_logits[0, label_idx, :] if task == 'next_activity' else time_logits[0, label_idx, :]
         predicted_token_id = torch.argmax(query_logits).item()
 
@@ -106,7 +134,7 @@ def show_prediction_example(model, generator, k_shots, task, rev_vocab):
         true_global_id = batch['query_true_tokens'].item()
 
         # --- Printing ---
-        context_tokens = [rev_vocab.get(tid, f"ID_{tid}") for tid in episode['tokens'][:-1]]
+        context_tokens = [rev_vocab.get(tid, f"ID_{tid}") for tid in episode['tokens'][:label_idx]]
         print(f"{Colors.GREEN}CONTEXT: {' '.join(context_tokens)} <LABEL>{Colors.RESET}")
 
         predicted_name = rev_vocab.get(predicted_global_id, f"ID_{predicted_global_id}")
@@ -154,8 +182,10 @@ if __name__ == "__main__":
     parser.add_argument('--timestamp_key', type=str, default='time:timestamp')
     parser.add_argument('--resource_key', type=str, default='org:resource')
     parser.add_argument('--group_key', type=str, default='org:group')
+    parser.add_argument('--seed', type=int, default=2027, help="Seed for eval episode sampling.")
 
     args = parser.parse_args()
+    set_seeds(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # -------------------------
@@ -168,8 +198,8 @@ if __name__ == "__main__":
             max_case_len=50,
             num_cat_features=3,
             num_num_features=NUM_NUM_FEATURES,
-            n_models=3,
-            seed=123  # different seed for test split
+            n_models=4,        # match train variants by default
+            seed=123           # different sampling seed for test split
         )
     else:
         if not _HAS_XES_GEN:
@@ -184,11 +214,11 @@ if __name__ == "__main__":
             timestamp_key=args.timestamp_key,
             resource_key=args.resource_key,
             group_key=args.group_key,
-            seed=123
+            seed=args.seed
         )
 
     # -------------------------
-    # Load model
+    # Load model (time dim from generator to avoid mismatches)
     # -------------------------
     model = IOTransformer(
         d_model=D_MODEL,
@@ -196,7 +226,7 @@ if __name__ == "__main__":
         n_heads=N_HEADS,
         cat_cardinalities=test_generator.cat_cardinalities,
         num_num_features=NUM_NUM_FEATURES,
-        num_time_features=NUM_TIME_FEATURES
+        num_time_features=test_generator.time_feat_dim
     ).to(device)
     try:
         model.load_state_dict(torch.load("io_transformer.pth", map_location=device))

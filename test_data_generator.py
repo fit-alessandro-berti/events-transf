@@ -15,6 +15,7 @@
 #  - Remaining time is computed from actual timestamps.
 
 from typing import List, Dict, Any, Optional
+from datetime import datetime, timezone
 import math
 import random
 import numpy as np
@@ -49,6 +50,7 @@ class XesEpisodeGenerator:
             raise ImportError(
                 "pm4py is required for XES ingestion. Install with `pip install pm4py`."
             )
+        # Own RNG for deterministic sampling inside this generator
         self.rng = random.Random(seed)
         np.random.seed(seed)
 
@@ -72,8 +74,13 @@ class XesEpisodeGenerator:
         traces = []
         for trace in log:
             events = list(trace)
-            # ensure chronological order
-            events.sort(key=lambda e: e.get(self.timestamp_key))
+
+            def _safe_ts(e):
+                t = e.get(self.timestamp_key)
+                # Map missing timestamps to a very early fixed point to keep sort stable
+                return t if isinstance(t, datetime) else datetime.min.replace(tzinfo=None)
+
+            events.sort(key=_safe_ts)
             if len(events) >= 3:
                 traces.append(events)
 
@@ -171,7 +178,7 @@ class XesEpisodeGenerator:
                     continue
                 t_curr = e.get(self.timestamp_key)
                 t_prev = evs[i - 1].get(self.timestamp_key)
-                if t_curr is None or t_prev is None:
+                if not (isinstance(t_curr, datetime) and isinstance(t_prev, datetime)):
                     dt_sec = 0.0
                 else:
                     dt_sec = (t_curr - t_prev).total_seconds()
@@ -191,7 +198,10 @@ class XesEpisodeGenerator:
                 cum += dt
                 progress = i / (len(evs) - 1)
                 remaining = max(total_time - cum, 0.0)
-                next_a = self._map_activity(str(evs[i + 1].get(self.activity_key, ""))) if i + 1 < len(evs) else a
+                if i + 1 < len(evs):
+                    next_a = self._map_activity(str(evs[i + 1].get(self.activity_key, "")))
+                else:
+                    next_a = a
 
                 num_feats = [amounts[i]]
                 if self.num_num_features > 1:
@@ -226,7 +236,8 @@ class XesEpisodeGenerator:
 
     # ---- episode builder (same as training format) ----
     def create_episode(self, k_shots: int, task: str) -> Dict[str, Any]:
-        sampled_cases = random.sample(self.dataset, k_shots + 1)
+        # Use the generator's own RNG for determinism
+        sampled_cases = self.rng.sample(self.dataset, k_shots + 1)
         support_cases, query_case = sampled_cases[:k_shots], sampled_cases[-1]
 
         episode_tokens: List[int] = []
@@ -244,7 +255,7 @@ class XesEpisodeGenerator:
 
         for case in support_cases:
             episode_tokens.append(SPECIAL_TOKENS['<CASE_SEP>']); pad_features()
-            prefix_len = random.randint(2, len(case) - 1)
+            prefix_len = self.rng.randint(2, len(case) - 1)
 
             for i in range(prefix_len):
                 episode_tokens.append(SPECIAL_TOKENS['<EVENT>'])
@@ -264,7 +275,7 @@ class XesEpisodeGenerator:
         episode_tokens.append(SPECIAL_TOKENS['<CASE_SEP>']); pad_features()
         episode_tokens.append(SPECIAL_TOKENS['<QUERY>']); pad_features()
 
-        q_prefix_len = random.randint(2, len(query_case) - 1)
+        q_prefix_len = self.rng.randint(2, len(query_case) - 1)
         for i in range(q_prefix_len):
             episode_tokens.append(SPECIAL_TOKENS['<EVENT>'])
             cat_feature_list.append(query_case[i]['cat_feats'])
