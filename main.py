@@ -18,11 +18,17 @@ NUM_NUM_FEATURES = 3
 NUM_TIME_FEATURES = 2
 LEARNING_RATE = 3e-4
 BATCH_SIZE = 32
-NUM_EPOCHS = 800          # 800 is usually enough with the learnable generator
+NUM_EPOCHS = 800
 K_SHOTS = 4
+
+AUX_SUPPORT_LOSS_WEIGHT = 1.0  # weight for auxiliary loss on support <LABEL> positions
 
 
 def train():
+    # Reproducibility (optional)
+    torch.manual_seed(42)
+    random.seed(42)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -39,7 +45,7 @@ def train():
         num_time_features=generator.time_feat_dim
     ).to(device)
 
-    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE)
+    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, betas=(0.9, 0.98), weight_decay=0.01)
     scheduler = CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS, eta_min=1e-6)
     criterion = nn.CrossEntropyLoss()
 
@@ -47,12 +53,15 @@ def train():
     for epoch in range(NUM_EPOCHS):
         model.train()
 
-        # Alternate tasks per batch for stability
-        task = 'next_activity' if epoch % 2 == 0 else 'remaining_time'
+        # Mix tasks WITHIN a batch for more stable multitask training
+        batch_episodes = []
+        for _ in range(BATCH_SIZE):
+            task = random.choice(['next_activity', 'remaining_time'])
+            batch_episodes.append(generator.create_episode(K_SHOTS, task))
 
-        batch_episodes = [generator.create_episode(K_SHOTS, task) for _ in range(BATCH_SIZE)]
         batch = collate_batch(batch_episodes)
 
+        # Move to device
         for key in batch:
             if isinstance(batch[key], torch.Tensor):
                 batch[key] = batch[key].to(device)
@@ -60,18 +69,70 @@ def train():
         optimizer.zero_grad()
 
         activity_logits, time_logits = model(batch)
+        tokens = batch['tokens']                           # [B,T]
+        loss_mask = batch['loss_mask']                     # [B,T] True at query <LABEL>
+        tasks = batch['tasks']                             # list length B
+        B, T = tokens.shape
 
-        # Compute logits only at the query <LABEL> positions via loss_mask
-        query_label_logits = activity_logits[batch['loss_mask']] if task == 'next_activity' else time_logits[
-            batch['loss_mask']]
+        # Build per-sample task masks
+        is_next = torch.tensor([1 if t == 'next_activity' else 0 for t in tasks],
+                               device=device, dtype=torch.bool)  # [B]
+        is_time = ~is_next
 
-        # Targets are derived from query_true_tokens (which were NOT appended to inputs)
-        if task == 'next_activity':
-            targets = batch['query_true_tokens'] - len(SPECIAL_TOKENS)
+        # ===== Query loss at the query <LABEL> positions (final token per sample) =====
+        query_mask_next = loss_mask & is_next.unsqueeze(1)  # [B,T]
+        query_mask_time = loss_mask & is_time.unsqueeze(1)  # [B,T]
+
+        query_logits_next = activity_logits[query_mask_next]        # [Nq_next, |A|]
+        query_logits_time = time_logits[query_mask_time]            # [Nq_time, |B|]
+
+        q_targets_all = batch['query_true_tokens']  # [B]
+        if query_logits_next.numel() > 0:
+            targets_next = (q_targets_all - len(SPECIAL_TOKENS))[is_next]  # [Nq_next]
+            query_loss_next = criterion(query_logits_next, targets_next)
         else:
-            targets = batch['query_true_tokens'] - (len(SPECIAL_TOKENS) + ACTIVITY_VOCAB_SIZE)
+            query_loss_next = torch.tensor(0.0, device=device)
 
-        loss = criterion(query_label_logits, targets)
+        if query_logits_time.numel() > 0:
+            targets_time = (q_targets_all - (len(SPECIAL_TOKENS) + ACTIVITY_VOCAB_SIZE))[is_time]  # [Nq_time]
+            query_loss_time = criterion(query_logits_time, targets_time)
+        else:
+            query_loss_time = torch.tensor(0.0, device=device)
+
+        query_loss = query_loss_next + query_loss_time
+
+        # ===== Auxiliary support loss at ALL support <LABEL> positions =====
+        # support <LABEL> positions are the <LABEL> tokens EXCEPT the final one in each episode
+        label_token_id = SPECIAL_TOKENS['<LABEL>']
+        label_positions = (tokens == label_token_id)                   # [B,T]
+        support_label_mask = label_positions & (~loss_mask)            # [B,T]
+
+        # For those positions, target = the NEXT token (label value token)
+        next_token_ids = torch.roll(tokens, shifts=-1, dims=1)         # [B,T]
+
+        # Split by task type
+        support_mask_next = support_label_mask & is_next.unsqueeze(1)
+        support_mask_time = support_label_mask & is_time.unsqueeze(1)
+
+        support_logits_next = activity_logits[support_mask_next]       # [Ns_next, |A|]
+        support_logits_time = time_logits[support_mask_time]           # [Ns_time, |B|]
+
+        if support_logits_next.numel() > 0:
+            support_targets_next = (next_token_ids - len(SPECIAL_TOKENS))[support_mask_next]
+            support_loss_next = criterion(support_logits_next, support_targets_next)
+        else:
+            support_loss_next = torch.tensor(0.0, device=device)
+
+        if support_logits_time.numel() > 0:
+            support_targets_time = (next_token_ids - (len(SPECIAL_TOKENS) + ACTIVITY_VOCAB_SIZE))[support_mask_time]
+            support_loss_time = criterion(support_logits_time, support_targets_time)
+        else:
+            support_loss_time = torch.tensor(0.0, device=device)
+
+        support_loss = support_loss_next + support_loss_time
+
+        # Total loss
+        loss = query_loss + AUX_SUPPORT_LOSS_WEIGHT * support_loss
 
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -79,8 +140,18 @@ def train():
         scheduler.step()
 
         if (epoch + 1) % 50 == 0:
-            print(f"Epoch [{epoch + 1}/{NUM_EPOCHS}] "
-                  f"Task: {task}, Loss: {loss.item():.4f}, LR: {scheduler.get_last_lr()[0]:.6f}")
+            with torch.no_grad():
+                # Simple diagnostics
+                n_q_next = int(query_mask_next.sum().item())
+                n_q_time = int(query_mask_time.sum().item())
+                n_s_next = int(support_mask_next.sum().item())
+                n_s_time = int(support_mask_time.sum().item())
+            print(
+                f"Epoch [{epoch + 1}/{NUM_EPOCHS}] "
+                f"Loss: {loss.item():.4f} | Q(next:{n_q_next}, time:{n_q_time})={query_loss.item():.4f} "
+                f"| S(next:{n_s_next}, time:{n_s_time})={support_loss.item():.4f} "
+                f"| LR: {scheduler.get_last_lr()[0]:.6f}"
+            )
 
     torch.save(model.state_dict(), "io_transformer.pth")
     print("Training finished and model saved.")
