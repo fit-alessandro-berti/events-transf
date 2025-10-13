@@ -14,7 +14,8 @@ class IOTransformer(nn.Module):
     Decoder-only backbone with:
       - Task conditioning (adds a task embedding to all tokens)
       - Weight-tied class heads (aligns class tokens with outputs)
-      - Retrieval/copy head at query <LABEL> using support label-value tokens
+      - Retrieval/copy head at *every* <LABEL> position using earlier support label-value tokens
+        (causal: each <LABEL> only sees keys strictly before it)
     """
     def __init__(self, d_model, n_layers, n_heads, cat_cardinalities, num_num_features, num_time_features, dropout=0.1):
         super().__init__()
@@ -36,10 +37,15 @@ class IOTransformer(nn.Module):
         self.task_embed = nn.Embedding(2, d_model)
 
         # Scales for tied-weight logits and retrieval logits (positivized by softplus)
-        self.tied_scale_act = nn.Parameter(torch.tensor(0.0))
+        # Start copy scales higher to encourage early use of support examples.
+        self.tied_scale_act = nn.Parameter(torch.tensor(0.0))   # softplus -> ~0.693
         self.tied_scale_time = nn.Parameter(torch.tensor(0.0))
-        self.copy_scale_act = nn.Parameter(torch.tensor(0.0))
-        self.copy_scale_time = nn.Parameter(torch.tensor(0.0))
+        self.copy_scale_act = nn.Parameter(torch.tensor(1.5))   # softplus -> ~1.70
+        self.copy_scale_time = nn.Parameter(torch.tensor(1.5))
+
+        # Learned temperatures for cosine sims in copy logits
+        self.copy_temp_act = nn.Parameter(torch.tensor(1.0))    # softplus -> ~1.31
+        self.copy_temp_time = nn.Parameter(torch.tensor(1.0))
 
     @staticmethod
     def _generate_causal_mask(sz: int, device: torch.device):
@@ -68,17 +74,22 @@ class IOTransformer(nn.Module):
         W_act = E[act_start: act_start + ACTIVITY_VOCAB_SIZE]       # [A, D]
         W_time = E[time_start: time_start + TIME_BUCKET_VOCAB_SIZE] # [B, D]
 
-        # F.linear: out = x @ W^T
         tied_act = F.linear(h, W_act)    # [B,T,A]
         tied_time = F.linear(h, W_time)  # [B,T,B]
         return tied_act, tied_time
 
-    def _retrieval_logits(self, h: torch.Tensor, tokens: torch.Tensor, loss_mask: torch.Tensor):
+    def _retrieval_logits_all_labels(self, h: torch.Tensor, tokens: torch.Tensor):
         """
-        Build copy/retrieval logits at the QUERY <LABEL> positions only.
-        Keys = support label-value tokens (positions whose previous token is <LABEL>).
-        h: [B,T,D], tokens: [B,T], loss_mask: [B,T] (True only at query <LABEL>)
-        Returns zeros elsewhere to keep shapes [B,T,C].
+        Build copy/retrieval logits at *every* <LABEL> position using only keys from the *past*.
+
+        Keys = positions whose previous token is <LABEL> (i.e., the support label-value tokens).
+        For each label position L, we select keys j where j < L to preserve causality.
+
+        h: [B,T,D], tokens: [B,T]
+        Returns two tensors shaped like full-logit maps:
+          act_logits:  [B,T,ACTIVITY_VOCAB_SIZE]
+          time_logits: [B,T,TIME_BUCKET_VOCAB_SIZE]
+        Non-<LABEL> positions are zeros.
         """
         B, T, D = h.shape
         device = h.device
@@ -89,60 +100,65 @@ class IOTransformer(nn.Module):
         act_start = len(SPECIAL_TOKENS)
         time_start = act_start + ACTIVITY_VOCAB_SIZE
 
-        for b in range(B):
-            tok_b = tokens[b]              # [T]
-            h_b = h[b]                     # [T,D]
-            q_mask = loss_mask[b]          # [T]  -> only query <LABEL>
+        # cosine temperature (positive)
+        tau_act = F.softplus(self.copy_temp_act)
+        tau_time = F.softplus(self.copy_temp_time)
 
-            if q_mask.sum().item() == 0:
+        # Precompute normalized states for cosine similarity
+        h_norm = F.normalize(h, dim=-1)  # [B,T,D]
+
+        for b in range(B):
+            tok_b = tokens[b]       # [T]
+            h_b = h_norm[b]         # [T,D]
+
+            # Label markers
+            is_label = (tok_b == SPECIAL_TOKENS['<LABEL>'])  # [T]
+            label_pos = torch.nonzero(is_label, as_tuple=False).squeeze(-1)  # [N_l] (possibly 0)
+
+            if label_pos.numel() == 0:
                 continue
 
-            # Positions that are label markers
-            is_label = (tok_b == SPECIAL_TOKENS['<LABEL>'])
+            # Value tokens = tokens whose previous token is <LABEL>
+            value_mask = torch.zeros_like(is_label)
+            value_mask[1:] = is_label[:-1]
 
-            # label-value tokens are the tokens whose *previous* token is <LABEL>
-            prev_is_label = torch.zeros_like(is_label)
-            prev_is_label[1:] = is_label[:-1]
-            value_mask = prev_is_label
-
-            # Separate activity vs time-bucket label-values
             val_act_mask = value_mask & (tok_b >= act_start) & (tok_b < time_start)
             val_time_mask = value_mask & (tok_b >= time_start) & (tok_b < time_start + TIME_BUCKET_VOCAB_SIZE)
 
-            q_pos = torch.nonzero(q_mask, as_tuple=False).squeeze(-1)  # usually 1 position
-            if q_pos.numel() == 0:
-                continue
+            key_pos_act = torch.nonzero(val_act_mask, as_tuple=False).squeeze(-1)   # [K_a]
+            key_pos_time = torch.nonzero(val_time_mask, as_tuple=False).squeeze(-1) # [K_t]
 
-            # ---- Next-activity retrieval
-            if val_act_mask.any():
-                k_idx = torch.nonzero(val_act_mask, as_tuple=False).squeeze(-1)           # [Nk]
-                K = h_b.index_select(0, k_idx)                                            # [Nk, D]
-                cls_idx = (tok_b.index_select(0, k_idx) - act_start).long()               # [Nk]
+            # Class indices for keys
+            if key_pos_act.numel() > 0:
+                key_cls_act = (tok_b.index_select(0, key_pos_act) - act_start).long()  # [K_a]
+            if key_pos_time.numel() > 0:
+                key_cls_time = (tok_b.index_select(0, key_pos_time) - time_start).long()  # [K_t]
 
-                Q = h_b.index_select(0, q_pos)                                            # [Nq, D]
-                sims = (Q @ K.t()) / math.sqrt(D)                                         # [Nq, Nk]
+            # For each label L, use only keys strictly before L to keep it causal
+            for L in label_pos.tolist():
+                if key_pos_act.numel() > 0:
+                    mask_before = key_pos_act < L
+                    if mask_before.any():
+                        K = h_b.index_select(0, key_pos_act[mask_before])       # [kL, D]
+                        cls_idx = key_cls_act[mask_before]                       # [kL]
+                        q = h_b[L].unsqueeze(0)                                   # [1, D]
+                        sims = (q @ K.t()).squeeze(0) * tau_act                  # [kL] cosine * temperature
+                        accum = torch.zeros(ACTIVITY_VOCAB_SIZE, device=device)
+                        accum = accum.index_add(0, cls_idx, sims)                # sum similarities per class
+                        act_logits[b, L] = accum
 
-                # scatter-add similarities into class bins
-                for i, qp in enumerate(q_pos):
-                    accum = torch.zeros(ACTIVITY_VOCAB_SIZE, device=device)
-                    accum = accum.index_add(0, cls_idx, sims[i])                          # [A]
-                    act_logits[b, qp] = accum
+                if key_pos_time.numel() > 0:
+                    mask_before = key_pos_time < L
+                    if mask_before.any():
+                        K = h_b.index_select(0, key_pos_time[mask_before])       # [kL, D]
+                        cls_idx = key_cls_time[mask_before]                      # [kL]
+                        q = h_b[L].unsqueeze(0)                                   # [1, D]
+                        sims = (q @ K.t()).squeeze(0) * tau_time                 # [kL]
+                        accum = torch.zeros(TIME_BUCKET_VOCAB_SIZE, device=device)
+                        accum = accum.index_add(0, cls_idx, sims)
+                        time_logits[b, L] = accum
 
-            # ---- Remaining-time retrieval
-            if val_time_mask.any():
-                k_idx = torch.nonzero(val_time_mask, as_tuple=False).squeeze(-1)
-                K = h_b.index_select(0, k_idx)                                            # [Nk, D]
-                cls_idx = (tok_b.index_select(0, k_idx) - time_start).long()              # [Nk]
-
-                Q = h_b.index_select(0, q_pos)                                            # [Nq, D]
-                sims = (Q @ K.t()) / math.sqrt(D)                                         # [Nq, Nk]
-
-                for i, qp in enumerate(q_pos):
-                    accum = torch.zeros(TIME_BUCKET_VOCAB_SIZE, device=device)
-                    accum = accum.index_add(0, cls_idx, sims[i])                          # [B]
-                    time_logits[b, qp] = accum
-
-        return act_logits, time_logits  # zeros elsewhere
+        return act_logits, time_logits
 
     def forward(self, batch):
         token_ids = batch['tokens']                # [B,T]
@@ -150,7 +166,6 @@ class IOTransformer(nn.Module):
         num_feats = batch['num_feats']            # [B,T,Fn]
         time_feats = batch['time_feats']          # [B,T,Ft]
         padding_mask = (batch['attention_mask'] == 0)  # [B,T] bool
-        loss_mask = batch.get('loss_mask', torch.zeros_like(token_ids, dtype=torch.bool))
         tasks = batch.get('tasks', None)
 
         device = token_ids.device
@@ -176,8 +191,8 @@ class IOTransformer(nn.Module):
         # Tied-weight logits (use class-token embeddings)
         tied_act, tied_time = self._tied_logits(h)                  # [B,T,A], [B,T,B]
 
-        # Retrieval/copy logits (only at query <LABEL>)
-        copy_act, copy_time = self._retrieval_logits(h, token_ids, loss_mask)
+        # Retrieval/copy logits at *all* <LABEL> positions (zeros elsewhere)
+        copy_act, copy_time = self._retrieval_logits_all_labels(h, token_ids)
 
         # Combine with learned positive scales (softplus)
         s_tied_act = F.softplus(self.tied_scale_act)
