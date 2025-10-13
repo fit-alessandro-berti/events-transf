@@ -11,11 +11,16 @@ from data_generator import VOCAB_SIZE, ACTIVITY_VOCAB_SIZE, TIME_BUCKET_VOCAB_SI
 
 class IOTransformer(nn.Module):
     """
-    Decoder-only backbone with:
-      - Task conditioning (adds a task embedding to all tokens)
-      - Weight-tied class heads (aligns class tokens with outputs)
-      - Retrieval/copy head at *every* <LABEL> position using earlier support label-value tokens
-        (causal: each <LABEL> only sees keys strictly before it)
+    Decoder-only backbone with three complementary heads:
+      1) Parametric heads (learned linear classifiers)
+      2) Weight-tied heads (dot with class-token embeddings)
+      3) Prototype head trained at *all* <LABEL> positions:
+         - builds class prototypes from earlier SUPPORT <LABEL> positions (causally)
+         - adds a Bayesian prior from class-token embeddings (helps at small K)
+         - compares each <LABEL> hidden state to prototypes via cosine similarity
+
+    All heads are combined with learned positive gates (softplus).
+    A task embedding conditions the whole sequence (next_activity vs remaining_time).
     """
     def __init__(self, d_model, n_layers, n_heads, cat_cardinalities, num_num_features, num_time_features, dropout=0.1):
         super().__init__()
@@ -36,22 +41,23 @@ class IOTransformer(nn.Module):
         # Learned task embedding added to ALL tokens (0=next_activity, 1=remaining_time)
         self.task_embed = nn.Embedding(2, d_model)
 
-        # Scales for tied-weight logits and retrieval logits (positivized by softplus)
-        # Start copy scales higher to encourage early use of support examples.
-        self.tied_scale_act = nn.Parameter(torch.tensor(0.0))   # softplus -> ~0.693
+        # Scales for tied-weight and prototype logits (positivized by softplus)
+        self.tied_scale_act = nn.Parameter(torch.tensor(0.0))   # ~0.69 after softplus
         self.tied_scale_time = nn.Parameter(torch.tensor(0.0))
-        self.copy_scale_act = nn.Parameter(torch.tensor(1.5))   # softplus -> ~1.70
-        self.copy_scale_time = nn.Parameter(torch.tensor(1.5))
+        # Start prototype gates >0 so the model uses supports early
+        self.proto_scale_act = nn.Parameter(torch.tensor(1.0))  # ~1.31 after softplus
+        self.proto_scale_time = nn.Parameter(torch.tensor(1.0))
 
-        # Learned temperatures for cosine sims in copy logits
-        self.copy_temp_act = nn.Parameter(torch.tensor(1.0))    # softplus -> ~1.31
-        self.copy_temp_time = nn.Parameter(torch.tensor(1.0))
+        # Prototype priors: how much class-token embedding contributes to the prototype
+        self.proto_prior_act = nn.Parameter(torch.tensor(0.5))  # ~1.13 after softplus
+        self.proto_prior_time = nn.Parameter(torch.tensor(0.5))
+
+        # Temperatures for cosine similarities in prototype logits
+        self.proto_temp_act = nn.Parameter(torch.tensor(1.0))   # ~1.31 after softplus
+        self.proto_temp_time = nn.Parameter(torch.tensor(1.0))
 
     @staticmethod
     def _generate_causal_mask(sz: int, device: torch.device):
-        """
-        Return a boolean causal mask where True indicates positions that should be masked.
-        """
         # upper triangular (excluding diagonal) is masked
         return torch.ones(sz, sz, dtype=torch.bool, device=device).triu(1)
 
@@ -62,11 +68,8 @@ class IOTransformer(nn.Module):
 
     def _tied_logits(self, h: torch.Tensor):
         """
-        Compute logits by tying output weights to the class token embeddings.
-        h: [B,T,D]
-        returns: (logits_act, logits_time)
+        Weight-tied logits using class-token embeddings.
         """
-        # Grab the token embedding table
         E = self.embedder.token_embed.weight  # [VOCAB, D]
         act_start = len(SPECIAL_TOKENS)
         time_start = act_start + ACTIVITY_VOCAB_SIZE
@@ -78,18 +81,16 @@ class IOTransformer(nn.Module):
         tied_time = F.linear(h, W_time)  # [B,T,B]
         return tied_act, tied_time
 
-    def _retrieval_logits_all_labels(self, h: torch.Tensor, tokens: torch.Tensor):
+    def _prototype_logits_all_labels(self, h: torch.Tensor, tokens: torch.Tensor):
         """
-        Build copy/retrieval logits at *every* <LABEL> position using only keys from the *past*.
+        Build prototype logits at *every* <LABEL> position using only earlier
+        SUPPORT <LABEL> positions (causal). Non-<LABEL> positions are zeros.
 
-        Keys = positions whose previous token is <LABEL> (i.e., the support label-value tokens).
-        For each label position L, we select keys j where j < L to preserve causality.
-
-        h: [B,T,D], tokens: [B,T]
-        Returns two tensors shaped like full-logit maps:
-          act_logits:  [B,T,ACTIVITY_VOCAB_SIZE]
-          time_logits: [B,T,TIME_BUCKET_VOCAB_SIZE]
-        Non-<LABEL> positions are zeros.
+        For each <LABEL> at position L:
+          - collect support label positions S where S < L and S is a support label
+          - use NEXT token at S to get the class id
+          - compute per-class prototype as (sum of normalized h[S] + alpha * class_emb) / (count + alpha)
+          - similarity = temperature * cosine(h[L], prototype[c])
         """
         B, T, D = h.shape
         device = h.device
@@ -100,65 +101,88 @@ class IOTransformer(nn.Module):
         act_start = len(SPECIAL_TOKENS)
         time_start = act_start + ACTIVITY_VOCAB_SIZE
 
-        # cosine temperature (positive)
-        tau_act = F.softplus(self.copy_temp_act)
-        tau_time = F.softplus(self.copy_temp_time)
-
-        # Precompute normalized states for cosine similarity
+        # Normalize hidden states and class-token embeddings for cosine
         h_norm = F.normalize(h, dim=-1)  # [B,T,D]
+        E = self.embedder.token_embed.weight.detach()  # [VOCAB, D]
+        E_act = F.normalize(E[act_start: act_start + ACTIVITY_VOCAB_SIZE], dim=-1)                 # [A,D]
+        E_time = F.normalize(E[time_start: time_start + TIME_BUCKET_VOCAB_SIZE], dim=-1)           # [B,D]
 
+        alpha_act = F.softplus(self.proto_prior_act)    # >0
+        alpha_time = F.softplus(self.proto_prior_time)  # >0
+        tau_act = F.softplus(self.proto_temp_act)       # >0
+        tau_time = F.softplus(self.proto_temp_time)     # >0
+
+        # Identify label positions
+        is_label = (tokens == SPECIAL_TOKENS['<LABEL>'])        # [B,T]
+        # Identify the very next token (class token) for each position
+        next_token_ids = torch.roll(tokens, shifts=-1, dims=1)  # [B,T]
+
+        # Query label is the very last <LABEL> in each episode by construction,
+        # but we don't need to know which one it is here; we always restrict to earlier supports.
         for b in range(B):
-            tok_b = tokens[b]       # [T]
-            h_b = h_norm[b]         # [T,D]
+            tok_b = tokens[b]                 # [T]
+            h_b = h_norm[b]                   # [T,D]
 
-            # Label markers
-            is_label = (tok_b == SPECIAL_TOKENS['<LABEL>'])  # [T]
-            label_pos = torch.nonzero(is_label, as_tuple=False).squeeze(-1)  # [N_l] (possibly 0)
-
+            label_pos = torch.nonzero(is_label[b], as_tuple=False).squeeze(-1)  # [N_l]
             if label_pos.numel() == 0:
                 continue
 
-            # Value tokens = tokens whose previous token is <LABEL>
-            value_mask = torch.zeros_like(is_label)
-            value_mask[1:] = is_label[:-1]
+            # Support label candidates: all label positions; we'll filter "earlier than L" inside the loop.
+            sup_pos_all = label_pos
+            nxt_ids_all = next_token_ids[b].index_select(0, sup_pos_all)  # [N_l]
+            h_sup_all = h_b.index_select(0, sup_pos_all)                  # [N_l, D]
 
-            val_act_mask = value_mask & (tok_b >= act_start) & (tok_b < time_start)
-            val_time_mask = value_mask & (tok_b >= time_start) & (tok_b < time_start + TIME_BUCKET_VOCAB_SIZE)
+            # Pre-split by class type to avoid doing it many times
+            sup_is_act = (nxt_ids_all >= act_start) & (nxt_ids_all < time_start)
+            sup_is_time = (nxt_ids_all >= time_start) & (nxt_ids_all < time_start + TIME_BUCKET_VOCAB_SIZE)
 
-            key_pos_act = torch.nonzero(val_act_mask, as_tuple=False).squeeze(-1)   # [K_a]
-            key_pos_time = torch.nonzero(val_time_mask, as_tuple=False).squeeze(-1) # [K_t]
-
-            # Class indices for keys
-            if key_pos_act.numel() > 0:
-                key_cls_act = (tok_b.index_select(0, key_pos_act) - act_start).long()  # [K_a]
-            if key_pos_time.numel() > 0:
-                key_cls_time = (tok_b.index_select(0, key_pos_time) - time_start).long()  # [K_t]
-
-            # For each label L, use only keys strictly before L to keep it causal
             for L in label_pos.tolist():
-                if key_pos_act.numel() > 0:
-                    mask_before = key_pos_act < L
-                    if mask_before.any():
-                        K = h_b.index_select(0, key_pos_act[mask_before])       # [kL, D]
-                        cls_idx = key_cls_act[mask_before]                       # [kL]
-                        q = h_b[L].unsqueeze(0)                                   # [1, D]
-                        sims = (q @ K.t()).squeeze(0) * tau_act                  # [kL] cosine * temperature
-                        accum = torch.zeros(ACTIVITY_VOCAB_SIZE, device=device)
-                        accum = accum.index_add(0, cls_idx, sims)                # sum similarities per class
-                        act_logits[b, L] = accum
+                # mask supports strictly before L
+                before_mask = (sup_pos_all < L)
+                if before_mask.any():
+                    # ---- Activities
+                    mask_a = before_mask & sup_is_act
+                    if mask_a.any():
+                        sup_idx = torch.nonzero(mask_a, as_tuple=False).squeeze(-1)
+                        cls_idx = (nxt_ids_all.index_select(0, sup_idx) - act_start).long()       # [kA]
+                        H = h_sup_all.index_select(0, sup_idx)                                     # [kA, D]
 
-                if key_pos_time.numel() > 0:
-                    mask_before = key_pos_time < L
-                    if mask_before.any():
-                        K = h_b.index_select(0, key_pos_time[mask_before])       # [kL, D]
-                        cls_idx = key_cls_time[mask_before]                      # [kL]
-                        q = h_b[L].unsqueeze(0)                                   # [1, D]
-                        sims = (q @ K.t()).squeeze(0) * tau_time                 # [kL]
-                        accum = torch.zeros(TIME_BUCKET_VOCAB_SIZE, device=device)
-                        accum = accum.index_add(0, cls_idx, sims)
-                        time_logits[b, L] = accum
+                        Hsum = torch.zeros(ACTIVITY_VOCAB_SIZE, D, device=device)
+                        Hsum.index_add_(0, cls_idx, H)
+                        Cnt = torch.zeros(ACTIVITY_VOCAB_SIZE, device=device)
+                        Cnt.index_add_(0, cls_idx, torch.ones_like(cls_idx, dtype=torch.float))
 
-        return act_logits, time_logits
+                        # Bayesian-smoothed prototypes (normalize again for cosine)
+                        proto = (Hsum + alpha_act * E_act) / (Cnt.unsqueeze(-1) + alpha_act + 1e-8)
+                        proto = F.normalize(proto, dim=-1)                                         # [A,D]
+
+                        q = h_b[L].unsqueeze(0)                                                    # [1,D]
+                        sims = (q @ proto.t()).squeeze(0) * tau_act                                # [A]
+                        act_logits[b, L] = sims
+
+                    # ---- Time buckets
+                    mask_t = before_mask & sup_is_time
+                    if mask_t.any():
+                        sup_idx = torch.nonzero(mask_t, as_tuple=False).squeeze(-1)
+                        cls_idx = (nxt_ids_all.index_select(0, sup_idx) - time_start).long()       # [kB]
+                        H = h_sup_all.index_select(0, sup_idx)                                     # [kB, D]
+
+                        Hsum = torch.zeros(TIME_BUCKET_VOCAB_SIZE, D, device=device)
+                        Hsum.index_add_(0, cls_idx, H)
+                        Cnt = torch.zeros(TIME_BUCKET_VOCAB_SIZE, device=device)
+                        Cnt.index_add_(0, cls_idx, torch.ones_like(cls_idx, dtype=torch.float))
+
+                        proto = (Hsum + alpha_time * E_time) / (Cnt.unsqueeze(-1) + alpha_time + 1e-8)
+                        proto = F.normalize(proto, dim=-1)                                         # [B,D]
+
+                        q = h_b[L].unsqueeze(0)                                                    # [1,D]
+                        sims = (q @ proto.t()).squeeze(0) * tau_time                               # [B]
+                        time_logits[b, L] = sims
+
+                # If no prior supports, we leave logits at zeros here; the param/tied heads
+                # (and their priors) carry the prediction for early labels.
+
+        return act_logits, time_logits  # zeros at non-<LABEL> positions
 
     def forward(self, batch):
         token_ids = batch['tokens']                # [B,T]
@@ -191,16 +215,16 @@ class IOTransformer(nn.Module):
         # Tied-weight logits (use class-token embeddings)
         tied_act, tied_time = self._tied_logits(h)                  # [B,T,A], [B,T,B]
 
-        # Retrieval/copy logits at *all* <LABEL> positions (zeros elsewhere)
-        copy_act, copy_time = self._retrieval_logits_all_labels(h, token_ids)
+        # Prototype logits at *all* <LABEL> positions (zeros elsewhere)
+        proto_act, proto_time = self._prototype_logits_all_labels(h, token_ids)
 
         # Combine with learned positive scales (softplus)
         s_tied_act = F.softplus(self.tied_scale_act)
         s_tied_time = F.softplus(self.tied_scale_time)
-        s_copy_act = F.softplus(self.copy_scale_act)
-        s_copy_time = F.softplus(self.copy_scale_time)
+        s_proto_act = F.softplus(self.proto_scale_act)
+        s_proto_time = F.softplus(self.proto_scale_time)
 
-        activity_logits = param_next + s_tied_act * tied_act + s_copy_act * copy_act
-        time_logits = param_time + s_tied_time * tied_time + s_copy_time * copy_time
+        activity_logits = param_next + s_tied_act * tied_act + s_proto_act * proto_act
+        time_logits = param_time + s_tied_time * tied_time + s_proto_time * proto_time
 
         return activity_logits, time_logits
