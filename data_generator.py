@@ -14,6 +14,18 @@ TIME_BUCKET_VOCAB_SIZE = 50
 VOCAB_SIZE = len(SPECIAL_TOKENS) + ACTIVITY_VOCAB_SIZE + TIME_BUCKET_VOCAB_SIZE
 
 
+def get_reverse_vocab():
+    """Creates a reverse mapping from token ID to human-readable string."""
+    rev_vocab = {v: k for k, v in SPECIAL_TOKENS.items()}
+    # Add activity tokens
+    for i in range(ACTIVITY_VOCAB_SIZE):
+        rev_vocab[len(SPECIAL_TOKENS) + i] = f"ACTIVITY_{i}"
+    # Add time bucket tokens
+    for i in range(TIME_BUCKET_VOCAB_SIZE):
+        rev_vocab[len(SPECIAL_TOKENS) + ACTIVITY_VOCAB_SIZE + i] = f"TIME_BUCKET_{i}"
+    return rev_vocab
+
+
 class EpisodeGenerator:
     """
     Synthetic dataset generator with learnable structure.
@@ -252,3 +264,60 @@ def collate_batch(batch):
         "query_true_continuous": torch.tensor([item['query_true_continuous'] for item in batch], dtype=torch.float),
         "tasks": [item['task'] for item in batch]
     }
+
+
+if __name__ == '__main__':
+    # This block allows you to run the script directly to see what the data looks like.
+
+    def print_episode_details(episode, rev_vocab):
+        """Prints a detailed, human-readable view of a single generated episode."""
+        print("-" * 80)
+        print(f"TASK: {episode['task']}")
+        print(f"TOTAL TOKENS: {len(episode['tokens'])}")
+        print("-" * 80)
+
+        for i, token_id in enumerate(episode['tokens']):
+            token_name = rev_vocab.get(token_id, f"ID_{token_id}")
+            loss_marker = " <--- LOSS" if episode['loss_mask'][i] == 1 else ""
+
+            print(f"[{i:03d}] Token: {token_name:<25}{loss_marker}")
+
+            if token_name == '<EVENT>':
+                cat_f = episode['cat_feats'][i]
+                num_f = [f"{x:.2f}" for x in episode['num_feats'][i]]
+                time_f = [f"{x:.2f}" for x in episode['time_feats'][i]]
+                print(f"      - Cat Feats:  {cat_f}")
+                print(f"      - Num Feats:  {num_f}")
+                print(f"      - Time Feats: {time_f}")
+
+        true_token_id = episode['query_true_token']
+        true_token_name = rev_vocab.get(true_token_id, f"ID_{true_token_id}")
+        print("-" * 80)
+        print(f"QUERY GROUND TRUTH TOKEN: {true_token_name} (ID: {true_token_id})")
+        if episode['query_true_continuous'] != -1.0:
+            print(f"QUERY GROUND TRUTH (Continuous): {episode['query_true_continuous']:.2f}")
+        print("-" * 80)
+
+
+    print("\n" + "="*25 + " GENERATING SAMPLE EPISODE " + "="*25)
+    # --- Configuration ---
+    K_SHOTS = 2
+    NUM_CAT_FEATURES = 2
+    NUM_NUM_FEATURES = 3
+
+    # --- Initialization ---
+    generator = EpisodeGenerator(
+        num_cases=100, max_case_len=20,
+        num_cat_features=NUM_CAT_FEATURES,
+        num_num_features=NUM_NUM_FEATURES
+    )
+    reverse_vocab = get_reverse_vocab()
+
+    # --- Generate and Print ---
+    print("\n--- EXAMPLE 1: NEXT ACTIVITY ---")
+    next_activity_episode = generator.create_episode(k_shots=K_SHOTS, task='next_activity')
+    print_episode_details(next_activity_episode, reverse_vocab)
+
+    print("\n--- EXAMPLE 2: REMAINING TIME ---")
+    remaining_time_episode = generator.create_episode(k_shots=K_SHOTS, task='remaining_time')
+    print_episode_details(remaining_time_episode, reverse_vocab)
