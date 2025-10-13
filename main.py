@@ -34,7 +34,10 @@ def train():
     # 2. Initialize Model
     model = IOTransformer(
         d_model=D_MODEL, n_layers=N_LAYERS, n_heads=N_HEADS,
-        num_num_features=NUM_NUM_FEATURES, num_time_features=NUM_TIME_FEATURES
+        # FIXED: Pass feature dimensions to the model
+        cat_cardinalities=generator.cat_cardinalities,
+        num_num_features=NUM_NUM_FEATURES,
+        num_time_features=NUM_TIME_FEATURES
     ).to(device)
 
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE)

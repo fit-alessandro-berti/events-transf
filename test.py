@@ -76,7 +76,10 @@ def run_evaluation():
     # 2. Load the trained model
     model = IOTransformer(
         d_model=D_MODEL, n_layers=N_LAYERS, n_heads=N_HEADS,
-        num_num_features=NUM_NUM_FEATURES, num_time_features=NUM_TIME_FEATURES
+        # FIXED: Pass feature dimensions to the model
+        cat_cardinalities=test_generator.cat_cardinalities,
+        num_num_features=NUM_NUM_FEATURES,
+        num_time_features=NUM_TIME_FEATURES
     ).to(device)
     try:
         model.load_state_dict(torch.load("io_transformer.pth", map_location=device))
