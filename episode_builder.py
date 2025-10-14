@@ -1,4 +1,3 @@
-
 import random
 from dataclasses import dataclass
 from typing import Dict
@@ -13,13 +12,15 @@ from utils import EpisodeBatch, SPECIAL_TOKENS, TOKEN_TYPES, make_causal_mask
 class NumericScaler:
     mean: float
     std: float
+
     def encode(self, x: np.ndarray) -> np.ndarray:
         s = self.std if self.std > 1e-6 else 1.0
         return (x - self.mean) / s
 
 
 class EpisodeBuilder:
-    def __init__(self, traces, activity2id: Dict[str, int], resource2id: Dict[str, int], max_seq_len: int = 512, seed: int = 123):
+    def __init__(self, traces, activity2id: Dict[str, int], resource2id: Dict[str, int], max_seq_len: int = 512,
+                 seed: int = 123):
         self.rng = random.Random(seed)
         self.traces = traces
         self.activity2id = activity2id
@@ -124,12 +125,12 @@ class EpisodeBuilder:
 
         q_idx = self.rng.randint(0, len(q_tr.events) - 2)
 
-        buffers = {k: [] for k in ["activity_ids","resource_ids","num_feats","time_feats",
-                                   "token_types","special_ids","class_label_ids","num_label_values",
-                                   "segment_ids","label_pos_mask","query_label_pos_mask"]}
+        buffers = {k: [] for k in ["activity_ids", "resource_ids", "num_feats", "time_feats",
+                                   "token_types", "special_ids", "class_label_ids", "num_label_values",
+                                   "segment_ids", "label_pos_mask", "query_label_pos_mask"]}
 
         # [TASK]
-        self._append_special(buffers, "TASK_NEXT_ACTIVITY" if task=="cls" else "TASK_REMAINING_TIME", seg_id=0)
+        self._append_special(buffers, "TASK_NEXT_ACTIVITY" if task == "cls" else "TASK_REMAINING_TIME", seg_id=0)
         # <CASE_SEP>
         self._append_special(buffers, "CASE_SEP", seg_id=0)
 
@@ -189,28 +190,62 @@ class EpisodeBuilder:
             label_pos_mask=to_tensor("label_pos_mask", torch.long),
             query_label_pos_mask=to_tensor("query_label_pos_mask", torch.long),
             y_cls=y_cls, y_reg=y_reg,
-            attn_mask=make_causal_mask(T, device=device),
+            attn_mask=None,  # Will be created in build_batch
         )
 
     def build_batch(self, task: str, K: int, batch_size: int, device: torch.device) -> EpisodeBatch:
         batches = [self.build_episode(task, K, device) for _ in range(batch_size)]
+
+        max_len = max(b.activity_ids.size(1) for b in batches)
+
+        for b in batches:
+            pad_len = max_len - b.activity_ids.size(1)
+            if pad_len > 0:
+                b.activity_ids = torch.nn.functional.pad(b.activity_ids, (0, pad_len), "constant", 0)
+                b.resource_ids = torch.nn.functional.pad(b.resource_ids, (0, pad_len), "constant", 0)
+                b.num_feats = torch.nn.functional.pad(b.num_feats, (0, 0, 0, pad_len), "constant", 0.0)
+                b.time_feats = torch.nn.functional.pad(b.time_feats, (0, 0, 0, pad_len), "constant", 0.0)
+                b.token_types = torch.nn.functional.pad(b.token_types, (0, pad_len), "constant", TOKEN_TYPES["PAD"])
+                b.special_ids = torch.nn.functional.pad(b.special_ids, (0, pad_len), "constant", SPECIAL_TOKENS["PAD"])
+                b.class_label_ids = torch.nn.functional.pad(b.class_label_ids, (0, pad_len), "constant", 0)
+                b.num_label_values = torch.nn.functional.pad(b.num_label_values, (0, pad_len), "constant", 0.0)
+                b.segment_ids = torch.nn.functional.pad(b.segment_ids, (0, pad_len), "constant", 0)
+                b.label_pos_mask = torch.nn.functional.pad(b.label_pos_mask, (0, pad_len), "constant", 0)
+                b.query_label_pos_mask = torch.nn.functional.pad(b.query_label_pos_mask, (0, pad_len), "constant", 0)
+
         def stack(attr):
             return torch.cat([getattr(b, attr) for b in batches], dim=0)
+
+        stacked_token_types = stack("token_types")
+        B = stacked_token_types.size(0)
+
+        # Create combined causal and padding attention mask
+        causal_mask = make_causal_mask(max_len, device=device)  # (T, T)
+        pad_mask = (stacked_token_types == TOKEN_TYPES["PAD"])  # (B, T)
+
+        # Expand pad_mask to be broadcastable with attention scores (B, H, T, T)
+        # We mask out keys that are padding
+        pad_mask_for_attn = pad_mask.unsqueeze(1).expand(-1, max_len, -1)  # (B, T, T)
+
+        final_attn_mask = causal_mask.unsqueeze(0).expand(B, -1, -1).clone()  # (B, T, T)
+        final_attn_mask[pad_mask_for_attn] = float("-inf")
+        final_attn_mask = final_attn_mask.unsqueeze(1)  # (B, 1, T, T) for broadcasting to heads
+
         return EpisodeBatch(
             activity_ids=stack("activity_ids"),
             resource_ids=stack("resource_ids"),
             num_feats=stack("num_feats"),
             time_feats=stack("time_feats"),
-            token_types=stack("token_types"),
+            token_types=stacked_token_types,
             special_ids=stack("special_ids"),
             class_label_ids=stack("class_label_ids"),
             num_label_values=stack("num_label_values"),
             segment_ids=stack("segment_ids"),
             label_pos_mask=stack("label_pos_mask"),
             query_label_pos_mask=stack("query_label_pos_mask"),
-            y_cls=torch.cat([b.y_cls if b.y_cls is not None else torch.zeros((1,), dtype=torch.long, device=device) for b in batches], dim=0) if batches[0].y_cls is not None else None,
-            y_reg=torch.cat([b.y_reg if b.y_reg is not None else torch.zeros((1,), dtype=torch.float32, device=device) for b in batches], dim=0) if batches[0].y_reg is not None else None,
-            attn_mask=batches[0].attn_mask,
+            y_cls=torch.cat([b.y_cls for b in batches]) if task == "cls" else None,
+            y_reg=torch.cat([b.y_reg for b in batches]) if task == "reg" else None,
+            attn_mask=final_attn_mask,
         )
 
     def build_causal_batch(self, batch_size: int, device: torch.device):
@@ -221,15 +256,16 @@ class EpisodeBuilder:
                 continue
             L = self.rng.randint(2, min(len(tr.events), self.max_seq_len))
             abs_anchor_min = self.rng.uniform(0, 60 * 24 * 365)
-            buffers = {k: [] for k in ["activity_ids","resource_ids","num_feats","time_feats",
-                                       "token_types","special_ids","class_label_ids","num_label_values",
-                                       "segment_ids","label_pos_mask","query_label_pos_mask"]}
+            buffers = {k: [] for k in ["activity_ids", "resource_ids", "num_feats", "time_feats",
+                                       "token_types", "special_ids", "class_label_ids", "num_label_values",
+                                       "segment_ids", "label_pos_mask", "query_label_pos_mask"]}
             for i in range(L):
                 self._append_event_token(buffers, tr, i, seg_id=0, abs_anchor_min=abs_anchor_min)
             import numpy as np
             def to_tensor(name, dtype):
                 arr = np.array(buffers[name])
                 return torch.tensor(arr, dtype=dtype, device=device).unsqueeze(0)
+
             b = EpisodeBatch(
                 activity_ids=to_tensor("activity_ids", torch.long),
                 resource_ids=to_tensor("resource_ids", torch.long),
@@ -243,21 +279,58 @@ class EpisodeBuilder:
                 label_pos_mask=to_tensor("label_pos_mask", torch.long),
                 query_label_pos_mask=to_tensor("query_label_pos_mask", torch.long),
                 y_cls=None, y_reg=None,
-                attn_mask=make_causal_mask(L, device=device),
+                attn_mask=None,  # Will be created after padding
             )
             next_acts = [tr.next_activity_ids[i] for i in range(L - 1)]
             rem_times = [tr.remaining_times[i] for i in range(L - 1)]
             b.next_cls_targets = torch.tensor(next_acts, dtype=torch.long, device=device).unsqueeze(0)
             b.next_reg_targets = torch.tensor(rem_times, dtype=torch.float32, device=device).unsqueeze(0)
             Bs.append(b)
+
+        if not Bs:
+            return self.build_causal_batch(batch_size, device)
+
+        max_len = max(b.activity_ids.size(1) for b in Bs)
+
+        for b in Bs:
+            pad_len = max_len - b.activity_ids.size(1)
+            if pad_len > 0:
+                b.activity_ids = torch.nn.functional.pad(b.activity_ids, (0, pad_len), "constant", 0)
+                b.resource_ids = torch.nn.functional.pad(b.resource_ids, (0, pad_len), "constant", 0)
+                b.num_feats = torch.nn.functional.pad(b.num_feats, (0, 0, 0, pad_len), "constant", 0.0)
+                b.time_feats = torch.nn.functional.pad(b.time_feats, (0, 0, 0, pad_len), "constant", 0.0)
+                b.token_types = torch.nn.functional.pad(b.token_types, (0, pad_len), "constant", TOKEN_TYPES["PAD"])
+                b.special_ids = torch.nn.functional.pad(b.special_ids, (0, pad_len), "constant", SPECIAL_TOKENS["PAD"])
+                b.class_label_ids = torch.nn.functional.pad(b.class_label_ids, (0, pad_len), "constant", 0)
+                b.num_label_values = torch.nn.functional.pad(b.num_label_values, (0, pad_len), "constant", 0.0)
+                b.segment_ids = torch.nn.functional.pad(b.segment_ids, (0, pad_len), "constant", 0)
+                b.label_pos_mask = torch.nn.functional.pad(b.label_pos_mask, (0, pad_len), "constant", 0)
+                b.query_label_pos_mask = torch.nn.functional.pad(b.query_label_pos_mask, (0, pad_len), "constant", 0)
+
+            target_pad_len = (max_len - 1) - b.next_cls_targets.size(1)
+            if target_pad_len > 0:
+                b.next_cls_targets = torch.nn.functional.pad(b.next_cls_targets, (0, target_pad_len), "constant", -100)
+                b.next_reg_targets = torch.nn.functional.pad(b.next_reg_targets, (0, target_pad_len), "constant", 0.0)
+
         def stack(attr):
             return torch.cat([getattr(b, attr) for b in Bs], dim=0)
+
+        stacked_token_types = stack("token_types")
+        B = stacked_token_types.size(0)
+
+        causal_mask = make_causal_mask(max_len, device=device)
+        pad_mask = (stacked_token_types == TOKEN_TYPES["PAD"])
+        pad_mask_for_attn = pad_mask.unsqueeze(1).expand(-1, max_len, -1)
+        final_attn_mask = causal_mask.unsqueeze(0).expand(B, -1, -1).clone()
+        final_attn_mask[pad_mask_for_attn] = float("-inf")
+        final_attn_mask = final_attn_mask.unsqueeze(1)
+
         out = EpisodeBatch(
             activity_ids=stack("activity_ids"),
             resource_ids=stack("resource_ids"),
             num_feats=stack("num_feats"),
             time_feats=stack("time_feats"),
-            token_types=stack("token_types"),
+            token_types=stacked_token_types,
             special_ids=stack("special_ids"),
             class_label_ids=stack("class_label_ids"),
             num_label_values=stack("num_label_values"),
@@ -265,8 +338,8 @@ class EpisodeBuilder:
             label_pos_mask=stack("label_pos_mask"),
             query_label_pos_mask=stack("query_label_pos_mask"),
             y_cls=None, y_reg=None,
-            attn_mask=Bs[0].attn_mask,
+            attn_mask=final_attn_mask,
         )
-        out.next_cls_targets = torch.cat([b.next_cls_targets for b in Bs], dim=0)
-        out.next_reg_targets = torch.cat([b.next_reg_targets for b in Bs], dim=0)
+        out.next_cls_targets = stack("next_cls_targets")
+        out.next_reg_targets = stack("next_reg_targets")
         return out

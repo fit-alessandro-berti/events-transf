@@ -1,4 +1,3 @@
-
 from dataclasses import dataclass
 
 import torch
@@ -34,7 +33,8 @@ class Trainer:
             loss, logits_at = classification_loss_at_labels(out["logits"], batch.query_label_pos_mask, batch.y_cls)
             losses["cls"] = loss
         else:
-            nll, mae, pred = regression_loss_at_labels(out["mu"], out["log_sigma"], batch.query_label_pos_mask, batch.y_reg)
+            nll, mae, pred = regression_loss_at_labels(out["mu"], out["log_sigma"], batch.query_label_pos_mask,
+                                                       batch.y_reg)
             losses["reg_nll"] = nll
 
         total_loss = sum(losses.values())
@@ -52,17 +52,25 @@ class Trainer:
         mu = out["mu"][:, :-1]
         log_sigma = out["log_sigma"][:, :-1]
 
-        B = logits.size(0)
-        C = logits.size(-1)
+        B, T_minus_1, C = logits.shape
         loss_cls = torch.nn.functional.cross_entropy(
             logits.reshape(-1, C),
             batch.next_cls_targets.reshape(-1),
             reduction="mean",
+            ignore_index=-100,
         )
-        y = batch.next_reg_targets.reshape(-1)
-        mu_f = mu.reshape(-1)
-        log_sigma_f = log_sigma.reshape(-1)
-        loss_reg = (0.5 * (((torch.log(y.clamp_min(1e-6)) - mu_f) / torch.exp(log_sigma_f)) ** 2) + log_sigma_f + torch.log(y.clamp_min(1e-6))).mean()
+
+        # Mask out padded values for regression loss
+        reg_mask = (batch.next_cls_targets != -100)
+        y = batch.next_reg_targets[reg_mask]
+        mu_m = mu[reg_mask]
+        log_sigma_m = log_sigma[reg_mask]
+
+        if y.numel() > 0:
+            loss_reg = (0.5 * (((torch.log(y.clamp_min(1e-6)) - mu_m) / torch.exp(
+                log_sigma_m)) ** 2) + log_sigma_m + torch.log(y.clamp_min(1e-6))).mean()
+        else:
+            loss_reg = torch.tensor(0.0, device=self.device)
 
         total_loss = 0.5 * loss_cls + 0.5 * loss_reg
         self.opt.zero_grad(set_to_none=True)
