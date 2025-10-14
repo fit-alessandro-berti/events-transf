@@ -1,4 +1,7 @@
 # main.py
+import numpy as np
+from sklearn.metrics import accuracy_score, mean_absolute_error, r2_score
+from collections import Counter
 from data_generator import ProcessSimulator, get_task_data
 from components.meta_learner import MetaLearner
 from training import train
@@ -14,34 +17,55 @@ CONFIG = {
     'num_numerical_features': 3,  # cost, time_from_start, time_from_previous
 
     # Meta-Learning Parameters
-    'num_shots_range': (3, 10),  # Vary K between 3 and 10 during training
+    'num_shots_range': (3, 10),
     'num_queries': 5,
-    'num_shots_test': [1, 5, 10],  # K values to evaluate
+    'num_shots_test': [1, 5, 10],
 
     # Training Parameters
     'lr': 1e-4,
     'epochs': 5,
     'episodes_per_epoch': 200,
-    'num_test_episodes': 100,
+
+    # FIX: Increase test episodes for more stable evaluation
+    'num_test_episodes': 500,
 }
+
+
+def calculate_baselines(test_tasks):
+    """Calculates performance for trivial baseline models."""
+    print("\n--- Evaluating Baseline Models ---")
+
+    # Classification: Majority Class Baseline
+    cls_labels = [label for _, label in test_tasks['classification']]
+    if cls_labels:
+        majority_class = Counter(cls_labels).most_common(1)[0][0]
+        baseline_preds = [majority_class] * len(cls_labels)
+        accuracy = accuracy_score(cls_labels, baseline_preds)
+        print(f"Classification (Majority Class Baseline) Accuracy: {accuracy:.4f}")
+
+    # Regression: Mean Value Baseline
+    reg_labels = np.array([label for _, label in test_tasks['regression']])
+    if reg_labels.size > 0:
+        mean_value = reg_labels.mean()
+        baseline_preds = np.full_like(reg_labels, mean_value)
+        mae = mean_absolute_error(reg_labels, baseline_preds)
+        r2 = r2_score(reg_labels, baseline_preds)
+        print(f"Regression (Mean Baseline) MAE: {mae:.4f} | R-squared: {r2:.4f} (by definition)")
 
 
 def main():
     print("1. Generating data...")
     simulator = ProcessSimulator(num_cases=500)
 
-    # Vocabularies for the embedder
     cat_vocabs = {
         'activity': len(simulator.vocab['activity']),
         'resource': len(simulator.vocab['resource']),
     }
 
-    # Generate logs from different process models for training
     log_a = simulator.generate_data_for_model('A')
     log_b = simulator.generate_data_for_model('B')
     log_c = simulator.generate_data_for_model('C')
 
-    # Create task pools for meta-training
     training_tasks = {
         'classification': [
             get_task_data(log_a, 'classification'),
@@ -71,7 +95,6 @@ def main():
     train(model, training_tasks, CONFIG)
 
     print("\n4. Preparing test data from an unseen process...")
-    # Generate data from a new process model the learner has never seen
     unseen_log = simulator.generate_data_for_model('D_unseen')
     test_tasks = {
         'classification': get_task_data(unseen_log, 'classification'),
@@ -80,6 +103,9 @@ def main():
 
     print("\n5. Starting testing...")
     test(model, test_tasks, CONFIG['num_shots_test'], CONFIG['num_test_episodes'])
+
+    # FIX: Add baseline evaluation for context
+    calculate_baselines(test_tasks)
 
 
 if __name__ == '__main__':
