@@ -17,53 +17,63 @@ def test(model, test_tasks, num_shots_list, num_test_episodes=100):
         print(f"\n--- Evaluating task: {task_type.upper()} ---")
         results[task_type] = {}
 
-        # For classification, group data by class to build valid episodes
         if task_type == 'classification':
             class_dict = defaultdict(list)
             for seq, label in task_data:
                 class_dict[label].append((seq, label))
+            # Filter out classes that don't have at least 2 examples (one for support, one for query)
+            class_dict = {c: items for c, items in class_dict.items() if len(items) >= 2}
+            if not class_dict:
+                print("Not enough data for classification testing (no class has >= 2 examples).")
+                continue
 
         for k in num_shots_list:
             all_preds, all_labels = [], []
 
             for _ in range(num_test_episodes):
-                # FIX: Build a valid episode to prevent KeyError
+                support_set, query_set = [], []
+
+                # FIX: Implement a robust episode creation logic for testing
                 if task_type == 'classification':
-                    # 1. Pick a random class for the query
+                    # 1. Select a random class that has enough examples
                     query_class = random.choice(list(class_dict.keys()))
 
-                    # 2. Sample one query example from that class
-                    if not class_dict[query_class]: continue
-                    query_example = random.choice(class_dict[query_class])
+                    # 2. Sample a query and at least one support example from that class
+                    samples_from_class = random.sample(class_dict[query_class], 2)
+                    query_example = samples_from_class[0]
+                    support_example_from_query_class = samples_from_class[1]
 
-                    # 3. Build the support set
-                    support_set = []
-                    # Ensure the query class is represented
-                    support_set.extend(
-                        random.sample([item for item in class_dict[query_class] if item != query_example],
-                                      min(k - 1, len(class_dict[query_class]) - 1)))
-
-                    # Fill the rest of the support set with other classes
-                    other_items = [item for cls, items in class_dict.items() if cls != query_class for item in items]
-                    remaining_shots = k - len(support_set)
-                    if remaining_shots > 0 and other_items:
-                        support_set.extend(random.sample(other_items, min(remaining_shots, len(other_items))))
-
-                    if not support_set: continue
                     query_set = [query_example]
+                    support_set = [support_example_from_query_class]
 
-                else:  # Regression logic remains the same
+                    # 3. Fill the rest of the support set (k-1 shots) from all available data
+                    pool = []
+                    for c, items in class_dict.items():
+                        pool.extend(items)
+                    # Make sure not to re-add the items already used
+                    pool = [item for item in pool if item not in query_set and item not in support_set]
+
+                    remaining_shots = k - 1
+                    if remaining_shots > 0 and pool:
+                        support_set.extend(random.sample(pool, min(remaining_shots, len(pool))))
+
+                    if len(support_set) < k:
+                        continue  # Skip if we couldn't build a full k-shot support set
+
+                else:  # Regression logic is simpler and remains the same
                     random.shuffle(task_data)
                     if len(task_data) < k + 1: continue
                     support_set = task_data[:k]
                     query_set = task_data[k:k + 1]
+
+                if not support_set or not query_set:
+                    continue
 
                 with torch.no_grad():
                     predictions, true_labels = model(support_set, query_set, task_type)
 
                 if task_type == 'classification':
                     preds = torch.argmax(predictions, dim=1)
-                    # The label needs to be mapped back from the prototype index
                     support_features_encoded = model._process_batch([s[0] for s in support_set])
                     query_features_encoded = model._process_batch([q[0] for q in query_set])
                     _, proto_classes = model.proto_head.forward_classification(
@@ -79,7 +89,7 @@ def test(model, test_tasks, num_shots_list, num_test_episodes=100):
                     all_labels.extend(true_labels.tolist())
 
             if not all_labels:
-                print(f"Not enough data to test with K={k} shots.")
+                print(f"Could not generate valid episodes to test with K={k} shots.")
                 continue
 
             # Compute metrics
