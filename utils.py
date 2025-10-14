@@ -74,7 +74,12 @@ def build_icl_episode(task, full_log, vocabs, k_shots, is_training=True):
 
         # Add events from the prefix
         for _, event in prefix.iterrows():
-            sequence.append({'activity': event['activity'], 'resource': event['resource'], 'cost': event['cost']})
+            sequence.append({
+                'activity': event['activity'],
+                'resource': event['resource'],
+                'cost': event['cost'],
+                'timestamp': event['timestamp']  # <-- FIX: Added timestamp
+            })
 
         sequence.append({'token': '<LABEL>'})
 
@@ -97,7 +102,12 @@ def build_icl_episode(task, full_log, vocabs, k_shots, is_training=True):
     query_prefix = query_case.iloc[:query_predict_idx]
 
     for _, event in query_prefix.iterrows():
-        sequence.append({'activity': event['activity'], 'resource': event['resource'], 'cost': event['cost']})
+        sequence.append({
+            'activity': event['activity'],
+            'resource': event['resource'],
+            'cost': event['cost'],
+            'timestamp': event['timestamp']  # <-- FIX: Added timestamp
+        })
 
     sequence.append({'token': '<LABEL>'})
 
@@ -143,7 +153,7 @@ def collate_fn(batch, vocabs):
             res_ids.append(vocabs['resource'].token2index.get(item.get('resource', '<PAD>'), 0))
 
             # 2. Feature extraction
-            is_event = 'activity' in item
+            is_event = 'timestamp' in item  # <-- FIX: More reliable check for an event
             if is_event:
                 # Normalize numeric features
                 cost = (item.get('cost', cost_mean) - cost_mean) / cost_std
