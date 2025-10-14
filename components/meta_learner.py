@@ -42,8 +42,8 @@ class MetaLearner(nn.Module):
         batch_df = pd.concat(padded_dfs, ignore_index=True)
         all_embeddings = self.embedder(batch_df)  # (batch_size * max_len, d_model)
 
-        # Reshape to (max_len, batch_size, d_model) for transformer
-        embeddings_reshaped = all_embeddings.view(len(batch_of_sequences), max_len, -1).permute(1, 0, 2)
+        # FIX: Reshape to (batch_size, max_len, d_model) for batch_first=True transformer
+        embeddings_reshaped = all_embeddings.view(len(batch_of_sequences), max_len, -1)
 
         mask_tensor = torch.tensor(masks, dtype=torch.bool)
 
