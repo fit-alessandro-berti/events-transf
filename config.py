@@ -18,24 +18,24 @@ CONFIG = {
         }
     },
 
-    # Model Hyperparameters (Increased capacity)
-    'd_model': 128,
-    'n_heads': 8,
-    'n_layers': 3,
+    # --- Lightweight Model Hyperparameters (for quick training) ---
+    'd_model': 64,                  # Reduced from 128
+    'n_heads': 4,                   # Reduced from 8
+    'n_layers': 2,                  # Reduced from 3
     'dropout': 0.1,
-    'num_numerical_features': 3,  # cost, time_from_start, time_from_previous
+    'num_numerical_features': 3,    # cost, time_from_start, time_from_previous
 
-    # Meta-Learning Parameters (More robust episodes)
-    'num_shots_range': (3, 10),  # This range is fine, but could be widened to (2, 15)
+    # --- Meta-Learning Parameters ---
+    'num_shots_range': (2, 8),      # A slightly smaller range for faster episodes
     'num_queries': 10,
     'num_shots_test': [1, 5, 10],
 
-    # Training Parameters (Significantly more training)
-    'lr': 1e-4,
-    'epochs': 25,
-    'episodes_per_epoch': 1000,
+    # --- Training Parameters (Significantly reduced for speed) ---
+    'lr': 3e-4,                     # Slightly higher learning rate can help with shorter training
+    'epochs': 5,                    # Reduced from 25
+    'episodes_per_epoch': 200,      # Reduced from 1000
 
-    # Increase test episodes for more stable evaluation
-    'num_test_episodes': 1000,
+    # --- Test Parameters (Reduced for faster evaluation) ---
+    'num_test_episodes': 200,       # Reduced from 1000
     'num_cases_for_testing': 500,
 }
