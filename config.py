@@ -19,4 +19,5 @@ CONFIG = {
 
     # Increase test episodes for more stable evaluation
     'num_test_episodes': 1000,
+    'num_cases_for_testing': 500,
 }
