@@ -1,102 +1,138 @@
-# main.py
-import numpy as np
+# training.py
+import random
 import torch
-from sklearn.metrics import accuracy_score, mean_absolute_error, r2_score
-from collections import Counter
+import torch.optim as optim
+import torch.nn.functional as F
+from tqdm import tqdm
+from collections import defaultdict
+import os
 
-# --- Import from project files ---
-from config import CONFIG
-from data_generator import XESLogLoader, get_task_data
-from components.meta_learner import MetaLearner
-from training import train
-from testing import evaluate_model
-
-
-def calculate_baselines(test_tasks):
-    """Calculates performance for trivial baseline models."""
-    print("\n--- Evaluating Baseline Models ---")
-
-    # Classification: Majority Class Baseline
-    cls_labels = [label for _, label in test_tasks['classification']]
-    if cls_labels:
-        majority_class = Counter(cls_labels).most_common(1)[0][0]
-        baseline_preds = [majority_class] * len(cls_labels)
-        accuracy = accuracy_score(cls_labels, baseline_preds)
-        print(f"Classification (Majority Class Baseline) Accuracy: {accuracy:.4f}")
-
-    # Regression: Mean Value Baseline
-    reg_labels = np.array([label for _, label in test_tasks['regression']])
-    if reg_labels.size > 0:
-        mean_value = reg_labels.mean()
-        baseline_preds = np.full_like(reg_labels, mean_value)
-        mae = mean_absolute_error(reg_labels, baseline_preds)
-        r2 = r2_score(reg_labels, baseline_preds)
-        print(f"Regression (Mean Baseline) MAE: {mae:.4f} | R-squared: {r2:.4f} (by definition)")
+# NEW: Import the learning rate scheduler
+from torch.optim import lr_scheduler
 
 
-def main():
-    # For reproducibility
-    torch.manual_seed(42)
-    np.random.seed(42)
+def create_episode(task_pool, num_shots_range, num_queries_per_class, num_ways_range=(2, 5)):
+    """
+    Creates a single meta-learning episode using N-way K-shot sampling.
+    This prevents the KeyError by ensuring query labels are present in the support set.
 
-    print("1. Loading data from XES files...")
-    # --- Load all logs to build a unified vocabulary ---
-    # The loader needs all paths (training + testing) to create a complete vocabulary
-    all_paths = {**CONFIG['log_paths']['training'], **CONFIG['log_paths']['testing']}
+    Args:
+        task_pool (list): A list of (sequence, label) tuples for a single task/process.
+        num_shots_range (tuple): Min and max K-shots per class.
+        num_queries_per_class (int): Number of query examples per class.
+        num_ways_range (tuple): Min and max N-ways (classes) for the episode.
+    """
+    # 1. Group data by class
+    class_dict = defaultdict(list)
+    for seq, label in task_pool:
+        class_dict[label].append((seq, label))
 
-    loader = XESLogLoader()
-    loader.load_logs(all_paths)
+    # 2. Decide on N-ways and K-shots for this episode
+    num_ways = random.randint(num_ways_range[0], num_ways_range[1])
+    num_shots = random.randint(num_shots_range[0], num_shots_range[1])
 
-    # Get vocabularies and individual logs from the loader
-    cat_vocabs = loader.get_vocabs()
+    # 3. Filter out classes that don't have enough examples for support + query
+    available_classes = [c for c, items in class_dict.items() if len(items) >= num_shots + num_queries_per_class]
+    if len(available_classes) < num_ways:
+        return None  # Not enough classes to form an episode
 
-    # Dynamically retrieve training logs based on keys in config
-    training_logs = {name: loader.get_log(name) for name in CONFIG['log_paths']['training']}
+    # 4. Sample N classes for the episode
+    episode_classes = random.sample(available_classes, num_ways)
 
-    if not all(training_logs.values()):
-        print("\n❌ Error: One or more training logs could not be loaded. Please check file paths in './logs/'.")
-        return
+    support_set = []
+    query_set = []
 
-    training_tasks = {
-        'classification': [get_task_data(log, 'classification') for log in training_logs.values()],
-        'regression': [get_task_data(log, 'regression') for log in training_logs.values()]
-    }
+    # 5. Sample K-shot support and Q-shot query examples for each class
+    for cls in episode_classes:
+        samples = random.sample(class_dict[cls], num_shots + num_queries_per_class)
+        support_set.extend(samples[:num_shots])
+        query_set.extend(samples[num_shots:])
 
-    print("\n2. Initializing model...")
-    model = MetaLearner(
-        cat_vocabs=cat_vocabs,
-        num_feat_dim=CONFIG['num_numerical_features'],
-        d_model=CONFIG['d_model'],
-        n_heads=CONFIG['n_heads'],
-        n_layers=CONFIG['n_layers'],
-        dropout=CONFIG['dropout']
-    )
+    random.shuffle(support_set)
+    random.shuffle(query_set)
 
-    print(f"Model has {sum(p.numel() for p in model.parameters() if p.requires_grad):,} trainable parameters.")
-
-    print("\n3. Starting training...")
-    train(model, training_tasks, CONFIG)
-
-    print("\n4. Preparing test data from an unseen process...")
-    # Get the name of the test log (assumes one for simplicity)
-    test_log_name = list(CONFIG['log_paths']['testing'].keys())[0]
-    unseen_log = loader.get_log(test_log_name)
-
-    if not unseen_log:
-        print(f"\n❌ Error: Test log '{test_log_name}' could not be loaded. Please check the file path in './logs/'.")
-        return
-
-    test_tasks = {
-        'classification': get_task_data(unseen_log, 'classification'),
-        'regression': get_task_data(unseen_log, 'regression')
-    }
-
-    print("\n5. Starting testing...")
-    evaluate_model(model, test_tasks, CONFIG['num_shots_test'], CONFIG['num_test_episodes'])
-
-    # Add baseline evaluation for context
-    calculate_baselines(test_tasks)
+    return support_set, query_set
 
 
-if __name__ == '__main__':
-    main()
+def train(model, training_tasks, config):
+    """
+    Main training loop.
+    """
+    print("🚀 Starting meta-training...")
+    optimizer = optim.AdamW(model.parameters(), lr=config['lr'])
+
+    # NEW: Initialize a learning rate scheduler.
+    # This will reduce the learning rate by a factor of 0.5 every epoch.
+    scheduler = lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.5)
+
+    checkpoint_dir = './checkpoints'
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
+    for epoch in range(config['epochs']):
+        model.train()
+        total_loss = 0.0
+
+        progress_bar = tqdm(range(config['episodes_per_epoch']), desc=f"Epoch {epoch + 1}/{config['epochs']}")
+        for _ in progress_bar:
+            task_type = random.choice(['classification', 'regression'])
+
+            task_data_pool = random.choice(training_tasks[task_type])
+
+            if task_type == 'classification':
+                episode = create_episode(
+                    task_data_pool,
+                    config['num_shots_range'],
+                    config['num_queries']
+                )
+            else:
+                if len(task_data_pool) < config['num_shots_range'][1] + config['num_queries']:
+                    episode = None
+                else:
+                    random.shuffle(task_data_pool)
+                    num_shots = random.randint(config['num_shots_range'][0], config['num_shots_range'][1])
+                    support_set = task_data_pool[:num_shots]
+                    query_set = task_data_pool[num_shots: num_shots + config['num_queries']]
+                    episode = (support_set, query_set)
+
+            if episode is None or not episode[0] or not episode[1]:
+                continue
+
+            support_set, query_set = episode
+
+            optimizer.zero_grad()
+
+            predictions, true_labels = model(support_set, query_set, task_type)
+
+            if predictions is None:
+                continue
+
+            if task_type == 'classification':
+                loss = F.cross_entropy(predictions, true_labels, ignore_index=-100)
+            else:  # regression
+                # NEW: Scale the regression loss to balance it with the classification loss.
+                # This factor is a hyperparameter you can tune.
+                regression_loss_scale = 0.01
+                loss = F.huber_loss(predictions.squeeze(), true_labels) * regression_loss_scale
+
+            if not torch.isnan(loss):
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                total_loss += loss.item()
+
+            progress_bar.set_postfix(loss=f"{loss.item():.4f}", task=task_type)
+
+        avg_loss = total_loss / config['episodes_per_epoch'] if config['episodes_per_epoch'] > 0 else 0
+
+        # NEW: Print the current learning rate at the end of the epoch
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"Epoch {epoch + 1} finished. Average Loss: {avg_loss:.4f} | Current LR: {current_lr:.6f}")
+
+        # NEW: Step the scheduler at the end of each epoch
+        scheduler.step()
+
+        checkpoint_path = os.path.join(checkpoint_dir, f"model_epoch_{epoch + 1}.pth")
+        torch.save(model.state_dict(), checkpoint_path)
+        print(f"💾 Model checkpoint saved to {checkpoint_path}")
+
+    print("✅ Meta-training complete.")
