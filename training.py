@@ -5,7 +5,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 from tqdm import tqdm
 from collections import defaultdict
-
+import os # <-- Import the os module
 
 def create_episode(task_pool, num_shots_range, num_queries_per_class, num_ways_range=(2, 5)):
     """
@@ -56,6 +56,11 @@ def train(model, training_tasks, config):
     """
     print("🚀 Starting meta-training...")
     optimizer = optim.AdamW(model.parameters(), lr=config['lr'])
+
+    # --- ADDED: Create a directory to save checkpoints ---
+    checkpoint_dir = './checkpoints'
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    # ---------------------------------------------------
 
     for epoch in range(config['epochs']):
         model.train()
@@ -108,5 +113,11 @@ def train(model, training_tasks, config):
 
         avg_loss = total_loss / config['episodes_per_epoch']
         print(f"Epoch {epoch + 1} finished. Average Loss: {avg_loss:.4f}")
+
+        # --- ADDED: Save the model checkpoint at the end of the epoch ---
+        checkpoint_path = os.path.join(checkpoint_dir, f"model_epoch_{epoch + 1}.pth")
+        torch.save(model.state_dict(), checkpoint_path)
+        print(f"💾 Model checkpoint saved to {checkpoint_path}")
+        # --------------------------------------------------------------
 
     print("✅ Meta-training complete.")
