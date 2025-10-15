@@ -7,6 +7,9 @@ from tqdm import tqdm
 from collections import defaultdict
 import os
 
+# NEW: Import the learning rate scheduler
+from torch.optim import lr_scheduler
+
 
 def create_episode(task_pool, num_shots_range, num_queries_per_class, num_ways_range=(2, 5)):
     """
@@ -58,10 +61,12 @@ def train(model, training_tasks, config):
     print("🚀 Starting meta-training...")
     optimizer = optim.AdamW(model.parameters(), lr=config['lr'])
 
-    # --- ADDED: Create a directory to save checkpoints ---
+    # NEW: Initialize a learning rate scheduler.
+    # This will reduce the learning rate by a factor of 0.5 every epoch.
+    scheduler = lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.5)
+
     checkpoint_dir = './checkpoints'
     os.makedirs(checkpoint_dir, exist_ok=True)
-    # ---------------------------------------------------
 
     for epoch in range(config['epochs']):
         model.train()
@@ -71,17 +76,15 @@ def train(model, training_tasks, config):
         for _ in progress_bar:
             task_type = random.choice(['classification', 'regression'])
 
-            # Select a random process data pool for the episode
             task_data_pool = random.choice(training_tasks[task_type])
 
             if task_type == 'classification':
-                # Use the robust N-way K-shot episode creator
                 episode = create_episode(
                     task_data_pool,
                     config['num_shots_range'],
-                    config['num_queries']  # This now means queries *per class*
+                    config['num_queries']
                 )
-            else:  # Regression doesn't have classes, so simple sampling is fine
+            else:
                 if len(task_data_pool) < config['num_shots_range'][1] + config['num_queries']:
                     episode = None
                 else:
@@ -106,23 +109,30 @@ def train(model, training_tasks, config):
             if task_type == 'classification':
                 loss = F.cross_entropy(predictions, true_labels, ignore_index=-100)
             else:  # regression
-                loss = F.huber_loss(predictions.squeeze(), true_labels)
+                # NEW: Scale the regression loss to balance it with the classification loss.
+                # This factor is a hyperparameter you can tune.
+                regression_loss_scale = 0.01
+                loss = F.huber_loss(predictions.squeeze(), true_labels) * regression_loss_scale
 
             if not torch.isnan(loss):
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # Gradient clipping
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 total_loss += loss.item()
 
             progress_bar.set_postfix(loss=f"{loss.item():.4f}", task=task_type)
 
         avg_loss = total_loss / config['episodes_per_epoch'] if config['episodes_per_epoch'] > 0 else 0
-        print(f"Epoch {epoch + 1} finished. Average Loss: {avg_loss:.4f}")
 
-        # --- ADDED: Save the model checkpoint at the end of the epoch ---
+        # NEW: Print the current learning rate at the end of the epoch
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"Epoch {epoch + 1} finished. Average Loss: {avg_loss:.4f} | Current LR: {current_lr:.6f}")
+
+        # NEW: Step the scheduler at the end of each epoch
+        scheduler.step()
+
         checkpoint_path = os.path.join(checkpoint_dir, f"model_epoch_{epoch + 1}.pth")
         torch.save(model.state_dict(), checkpoint_path)
         print(f"💾 Model checkpoint saved to {checkpoint_path}")
-        # --------------------------------------------------------------
 
     print("✅ Meta-training complete.")
