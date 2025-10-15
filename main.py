@@ -3,34 +3,13 @@ import numpy as np
 import torch
 from sklearn.metrics import accuracy_score, mean_absolute_error, r2_score
 from collections import Counter
+
+# --- Import from project files ---
+from config import CONFIG
 from data_generator import ProcessSimulator, get_task_data
 from components.meta_learner import MetaLearner
 from training import train
-from testing import test
-
-# --- Configuration ---
-CONFIG = {
-    # Model Hyperparameters (Increased capacity)
-    'd_model': 128,
-    'n_heads': 8,
-    'n_layers': 3,
-    'dropout': 0.1,
-    'num_numerical_features': 3,  # cost, time_from_start, time_from_previous
-
-    # Meta-Learning Parameters (More robust episodes)
-    'num_shots_range': (3, 10),  # This range is fine, but could be widened to (2, 15)
-    'num_queries': 10,
-    'num_shots_test': [1, 5, 10],
-
-    # Training Parameters (Significantly more training)
-    'lr': 1e-4,
-    'epochs': 25,
-    'episodes_per_epoch': 1000,
-
-    # Increase test episodes for more stable evaluation
-    'num_test_episodes': 1000,
-}
-
+from testing import evaluate_model # <-- Use the new evaluation function
 
 def calculate_baselines(test_tasks):
     """Calculates performance for trivial baseline models."""
@@ -107,7 +86,8 @@ def main():
     }
 
     print("\n5. Starting testing...")
-    test(model, test_tasks, CONFIG['num_shots_test'], CONFIG['num_test_episodes'])
+    # --- MODIFIED: Call the new evaluation function ---
+    evaluate_model(model, test_tasks, CONFIG['num_shots_test'], CONFIG['num_test_episodes'])
 
     # Add baseline evaluation for context
     calculate_baselines(test_tasks)
