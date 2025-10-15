@@ -1,177 +1,136 @@
-# testing.py
-import torch
+# training.py
 import random
-import numpy as np
-from sklearn.metrics import accuracy_score, mean_absolute_error, r2_score
+import torch
+import torch.optim as optim
+import torch.nn.functional as F
+from tqdm import tqdm
 from collections import defaultdict
 import os
-import re
 
-# --- Stand-alone execution imports ---
-from config import CONFIG
-from data_generator import XESLogLoader, get_task_data
-from components.meta_learner import MetaLearner
+# Import from project files
+from data_generator import get_task_data
+from torch.optim import lr_scheduler
 
 
-def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
+def create_episode(task_pool, num_shots_range, num_queries_per_class, num_ways_range=(2, 5)):
     """
-    Evaluates a given model's in-context learning performance on unseen tasks.
-    This function can be called from main.py or from the stand-alone script.
+    Creates a single meta-learning episode using N-way K-shot sampling.
     """
-    print("\n🔬 Starting meta-testing on unseen process...")
-    model.eval()
-    results = {}
+    # 1. Group data by class
+    class_dict = defaultdict(list)
+    for seq, label in task_pool:
+        class_dict[label].append((seq, label))
 
-    for task_type, task_data in test_tasks.items():
-        print(f"\n--- Evaluating task: {task_type} ---")
-        results[task_type] = {}
+    # 2. Decide on N-ways and K-shots for this episode
+    num_ways = random.randint(num_ways_range[0], num_ways_range[1])
+    num_shots = random.randint(num_shots_range[0], num_shots_range[1])
 
-        if not task_data:
-            print(f"Skipping {task_type}: No test data available.")
-            continue
+    # 3. Filter out classes that don't have enough examples for support + query
+    available_classes = [c for c, items in class_dict.items() if len(items) >= num_shots + num_queries_per_class]
+    if len(available_classes) < num_ways:
+        return None  # Not enough classes to form an episode
 
-        # --- Classification-specific setup ---
-        if task_type == 'classification':
-            class_dict = defaultdict(list)
-            for seq, label in task_data:
-                class_dict[label].append((seq, label))
-            class_dict = {c: items for c, items in class_dict.items() if len(items) >= max(num_shots_list) + 1}
-            available_classes = list(class_dict.keys())
-            if len(available_classes) < 2:
-                print("Classification test skipped: Need at least 2 classes with sufficient examples.")
-                continue
-            N_WAYS_TEST = min(len(available_classes), 7)
-            print(f"Running classification test as a {N_WAYS_TEST}-way task.")
-        # ------------------------------------
+    # 4. Sample N classes for the episode
+    episode_classes = random.sample(available_classes, num_ways)
 
-        for k in num_shots_list:
-            all_preds, all_labels = [], []
-            episodes_generated = 0
+    support_set, query_set = [], []
+    for cls in episode_classes:
+        samples = random.sample(class_dict[cls], num_shots + num_queries_per_class)
+        support_set.extend(samples[:num_shots])
+        query_set.extend(samples[num_shots:])
 
-            for _ in range(num_test_episodes):
-                support_set, query_set = [], []
+    random.shuffle(support_set)
+    random.shuffle(query_set)
 
-                if task_type == 'classification':
-                    eligible_classes = [c for c, items in class_dict.items() if len(items) >= k + 1]
-                    if len(eligible_classes) < N_WAYS_TEST:
-                        continue
-
-                    episode_classes = random.sample(eligible_classes, N_WAYS_TEST)
-
-                    for cls in episode_classes:
-                        samples = random.sample(class_dict[cls], k + 1)
-                        support_set.extend(samples[:k])
-                        query_set.append(samples[k])
-
-                    random.shuffle(support_set)
-                    random.shuffle(query_set)
-                else:  # Regression
-                    if len(task_data) < k + 1: continue
-                    random.shuffle(task_data)
-                    support_set = task_data[:k]
-                    query_set = task_data[k:k + 1]
-
-                if not support_set or not query_set: continue
-
-                episodes_generated += 1
-                with torch.no_grad():
-                    predictions, true_labels = model(support_set, query_set, task_type)
-
-                if predictions is None or true_labels is None or torch.all(true_labels == -100):
-                    continue
-
-                if task_type == 'classification':
-                    all_preds.extend(torch.argmax(predictions, dim=1).cpu().numpy())
-                    all_labels.extend(true_labels.cpu().numpy())
-                else:
-                    all_preds.extend(predictions.view(-1).cpu().tolist())
-                    all_labels.extend(true_labels.view(-1).cpu().tolist())
-
-            if episodes_generated == 0:
-                print(f"Could not generate valid episodes to test with K={k} shots.")
-                continue
-
-            # Compute metrics
-            if task_type == 'classification':
-                valid_indices = [i for i, label in enumerate(all_labels) if label != -100]
-                if not valid_indices:
-                    print(f"[{k}-shot] Accuracy: NaN (No valid predictions)")
-                    continue
-                accuracy = accuracy_score(np.array(all_labels)[valid_indices], np.array(all_preds)[valid_indices])
-                print(f"[{k}-shot] Accuracy: {accuracy:.4f}")
-                results[task_type][k] = {'accuracy': accuracy}
-            else:  # Regression
-                valid_preds_transformed = [p for p, l in zip(all_preds, all_labels) if
-                                           not np.isnan(p) and not np.isnan(l)]
-                valid_labels_transformed = [l for p, l in zip(all_preds, all_labels) if
-                                            not np.isnan(p) and not np.isnan(l)]
-
-                if not valid_labels_transformed:
-                    print(f"[{k}-shot] MAE: NaN (No valid predictions)")
-                    continue
-
-                valid_preds = np.expm1(valid_preds_transformed)
-                valid_labels = np.expm1(valid_labels_transformed)
-                valid_preds[valid_preds < 0] = 0
-
-                mae = mean_absolute_error(valid_labels, valid_preds)
-                r2 = r2_score(valid_labels, valid_preds)
-                print(f"[{k}-shot] MAE: {mae:.4f} | R-squared: {r2:.4f}")
-                results[task_type][k] = {'mae': mae, 'r2': r2}
-
-    return results
+    return support_set, query_set
 
 
-if __name__ == '__main__':
-    print("--- Running Testing Script in Stand-Alone Mode ---")
+def train(model, loader, config):
+    """
+    Main training loop with dynamic per-epoch re-mapping of categorical features.
+    """
+    print("🚀 Starting meta-training...")
+    optimizer = optim.AdamW(model.parameters(), lr=config['lr'])
+    scheduler = lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.5)
 
     checkpoint_dir = './checkpoints'
-    if not os.path.isdir(checkpoint_dir): exit(f"❌ Error: Checkpoint directory '{checkpoint_dir}' not found.")
+    os.makedirs(checkpoint_dir, exist_ok=True)
 
-    checkpoints = [f for f in os.listdir(checkpoint_dir) if f.startswith('model_epoch_') and f.endswith('.pth')]
-    if not checkpoints: exit(f"❌ Error: No checkpoints found in '{checkpoint_dir}'.")
+    for epoch in range(config['epochs']):
+        model.train()
 
-    epoch_map = {int(re.search(r'model_epoch_(\d+).pth', f).group(1)): f for f in checkpoints if
-                 re.search(r'model_epoch_(\d+).pth', f)}
-    latest_checkpoint_path = os.path.join(checkpoint_dir, epoch_map[max(epoch_map.keys())])
-    print(f"🔍 Found latest checkpoint: {epoch_map[max(epoch_map.keys())]}")
+        # --- DYNAMIC REMAPPING ---
+        # Generate new random integer mappings for all logs for this epoch
+        print(f"\n--- 🎲 Generating new random mappings for Epoch {epoch + 1} ---")
+        loader.remap_logs(config['fixed_vocab_sizes'])
 
-    print("\n📦 Loading raw logs for testing...")
-    all_paths = {**CONFIG['log_paths']['training'], **CONFIG['log_paths']['testing']}
-    loader = XXESLogLoader()
-    loader.load_logs(all_paths)
+        # Re-create training tasks using the newly mapped logs
+        training_logs = {name: loader.get_log(name) for name in config['log_paths']['training']}
+        valid_training_logs = [log for log in training_logs.values() if log]
 
-    torch.manual_seed(42)
-    np.random.seed(42)
-    model = MetaLearner(
-        cat_vocabs=CONFIG['fixed_vocab_sizes'],
-        num_feat_dim=CONFIG['num_numerical_features'],
-        d_model=CONFIG['d_model'],
-        n_heads=CONFIG['n_heads'],
-        n_layers=CONFIG['n_layers'],
-        dropout=CONFIG['dropout']
-    )
-    print(f"💾 Loading weights from {latest_checkpoint_path}...")
-    model.load_state_dict(torch.load(latest_checkpoint_path))
+        if not valid_training_logs:
+            print(f"⚠️ Warning: No valid training logs found for epoch {epoch + 1}. Skipping.")
+            continue
 
-    # --- NEW: Apply a single random mapping for the test run ---
-    print("🎲 Applying a random mapping to the test data...")
-    loader.remap_logs(CONFIG['fixed_vocab_sizes'])
+        training_tasks = {
+            'classification': [get_task_data(log, 'classification') for log in valid_training_logs],
+            'regression': [get_task_data(log, 'regression') for log in valid_training_logs]
+        }
+        # -------------------------
 
-    test_log_name = list(CONFIG['log_paths']['testing'].keys())[0]
-    unseen_log = loader.get_log(test_log_name)
+        total_loss = 0.0
+        progress_bar = tqdm(range(config['episodes_per_epoch']), desc=f"Epoch {epoch + 1}/{config['epochs']}")
+        for _ in progress_bar:
+            task_type = random.choice(['classification', 'regression'])
+            task_data_pool = random.choice(training_tasks[task_type])
 
-    if not unseen_log:
-        exit(f"❌ Error: Test log '{test_log_name}' could not be loaded.")
+            if not task_data_pool: continue
 
-    test_tasks = {
-        'classification': get_task_data(unseen_log, 'classification'),
-        'regression': get_task_data(unseen_log, 'regression')
-    }
+            if task_type == 'classification':
+                episode = create_episode(
+                    task_data_pool,
+                    config['num_shots_range'],
+                    config['num_queries']
+                )
+            else:  # Regression
+                if len(task_data_pool) < config['num_shots_range'][1] + config['num_queries']:
+                    episode = None
+                else:
+                    random.shuffle(task_data_pool)
+                    num_shots = random.randint(config['num_shots_range'][0], config['num_shots_range'][1])
+                    support_set = task_data_pool[:num_shots]
+                    query_set = task_data_pool[num_shots: num_shots + config['num_queries']]
+                    episode = (support_set, query_set)
 
-    evaluate_model(
-        model,
-        test_tasks,
-        CONFIG['num_shots_test'],
-        CONFIG['num_test_episodes']
-    )
+            if episode is None or not episode[0] or not episode[1]:
+                continue
+
+            support_set, query_set = episode
+            optimizer.zero_grad()
+            predictions, true_labels = model(support_set, query_set, task_type)
+
+            if predictions is None: continue
+
+            if task_type == 'classification':
+                loss = F.cross_entropy(predictions, true_labels, ignore_index=-100)
+            else:  # regression
+                loss = F.huber_loss(predictions.squeeze(), true_labels) * 0.01
+
+            if not torch.isnan(loss):
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                total_loss += loss.item()
+
+            progress_bar.set_postfix(loss=f"{loss.item():.4f}", task=task_type)
+
+        avg_loss = total_loss / config['episodes_per_epoch'] if config['episodes_per_epoch'] > 0 else 0
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"Epoch {epoch + 1} finished. Average Loss: {avg_loss:.4f} | Current LR: {current_lr:.6f}")
+
+        scheduler.step()
+        checkpoint_path = os.path.join(checkpoint_dir, f"model_epoch_{epoch + 1}.pth")
+        torch.save(model.state_dict(), checkpoint_path)
+        print(f"💾 Model checkpoint saved to {checkpoint_path}")
+
+    print("✅ Meta-training complete.")
