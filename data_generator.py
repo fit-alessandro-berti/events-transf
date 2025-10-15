@@ -3,6 +3,7 @@ import pandas as pd
 import random
 import pm4py
 import os
+import numpy as np
 
 # --- Import from project files ---
 # This is needed for the stand-alone execution block
@@ -174,7 +175,11 @@ def get_task_data(log, task_type, max_seq_len=10):
             elif task_type == 'regression':
                 last_event_time = trace[-1]['timestamp']
                 current_event_time = prefix[-1]['timestamp']
-                label = (last_event_time - current_event_time) / 3600.0  # in hours
+                remaining_time_hours = (last_event_time - current_event_time) / 3600.0
+
+                # FIX: Apply log transformation to the regression target for a more stable distribution.
+                label = np.log1p(remaining_time_hours)
+
                 tasks.append((prefix, label))
 
     return tasks

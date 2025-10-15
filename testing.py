@@ -112,12 +112,22 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
                 accuracy = accuracy_score(valid_labels, valid_preds)
                 print(f"[{k}-shot] Accuracy: {accuracy:.4f}")
                 results[task_type][k] = {'accuracy': accuracy}
-            else:
-                valid_preds = [p for p, l in zip(all_preds, all_labels) if not np.isnan(p) and not np.isnan(l)]
-                valid_labels = [l for p, l in zip(all_preds, all_labels) if not np.isnan(p) and not np.isnan(l)]
-                if not valid_labels:
+            else: # Regression
+                # NEW: Reverse the log transformation to evaluate on the original scale (hours)
+                valid_preds_transformed = [p for p, l in zip(all_preds, all_labels) if not np.isnan(p) and not np.isnan(l)]
+                valid_labels_transformed = [l for p, l in zip(all_preds, all_labels) if not np.isnan(p) and not np.isnan(l)]
+
+                if not valid_labels_transformed:
                     print(f"[{k}-shot] MAE: NaN (No valid predictions)")
                     continue
+
+                # Apply the inverse function: exp(x) - 1
+                valid_preds = np.expm1(valid_preds_transformed)
+                valid_labels = np.expm1(valid_labels_transformed)
+
+                # Ensure no negative predictions after inverse transform (can happen with small negative preds)
+                valid_preds[valid_preds < 0] = 0
+
                 mae = mean_absolute_error(valid_labels, valid_preds)
                 r2 = r2_score(valid_labels, valid_preds)
                 print(f"[{k}-shot] MAE: {mae:.4f} | R-squared: {r2:.4f}")
@@ -176,7 +186,7 @@ if __name__ == '__main__':
     unseen_log = loader.get_log(test_log_name)
 
     if not unseen_log:
-        print(f"❌ Error: Test log '{test_log_name}' could not be loaded. Please check file path in './logs/'.")
+        print(f"❌ Error: Test log '{test_log_name}' could not be loaded. Please check the file path in './logs/'.")
         exit()
 
     test_tasks = {
