@@ -25,7 +25,7 @@ def test(model, test_tasks, num_shots_list, num_test_episodes=100):
                 class_dict[label].append((seq, label))
 
             # Filter out classes that don't have enough examples
-            # (need at least 2 for a support/query split)
+            # A class needs at least 2 examples to be used in an episode (one for support, one for query).
             class_dict = {c: items for c, items in class_dict.items() if len(items) >= 2}
             if not class_dict:
                 print("Not enough data for classification testing (no class has >= 2 examples).")
@@ -38,36 +38,34 @@ def test(model, test_tasks, num_shots_list, num_test_episodes=100):
                 support_set, query_set = [], []
 
                 if task_type == 'classification':
-                    # FIX: Implement stable N-way K-shot sampling to prevent performance degradation.
-                    # This logic ensures the number of classes ("ways") is controlled, making the
-                    # task difficulty consistent as K (shots) increases.
-                    N_WAYS = 5  # Number of classes in the episode's "world"
+                    # FIX: Implement a consistent N-way K-shot evaluation protocol.
+                    # This ensures the task difficulty is consistent across different `k` values.
+                    N_WAYS_TEST = 5  # The number of classes in each test episode.
 
                     available_classes = list(class_dict.keys())
-                    if len(available_classes) < 2: continue  # Need at least one class for query and one for support
+                    if len(available_classes) < N_WAYS_TEST:
+                        continue  # Not enough unique classes in the test set to form a full episode.
 
                     # 1. Sample N_WAYS classes for the episode.
-                    num_ep_classes = min(N_WAYS, len(available_classes))
-                    episode_classes = random.sample(available_classes, num_ep_classes)
+                    episode_classes = random.sample(available_classes, N_WAYS_TEST)
 
-                    # 2. Choose a query class and sample a query/support pair from it.
-                    query_class = random.choice(episode_classes)
-                    query_example, support_from_query_class = random.sample(class_dict[query_class], 2)
+                    # 2. Create a pool of all available examples from these classes.
+                    pool = []
+                    for c in episode_classes:
+                        pool.extend(class_dict[c])
 
+                    # 3. Sample a query example from the pool.
+                    query_example = random.choice(pool)
+
+                    # 4. Create a pool for the support set (all items except the query).
+                    support_pool = [item for item in pool if item != query_example]
+
+                    # 5. Sample K support examples from the support pool.
+                    if len(support_pool) < k:
+                        continue  # Skip if we can't form a full k-shot support set.
+
+                    support_set = random.sample(support_pool, k)
                     query_set = [query_example]
-                    support_set = [support_from_query_class]
-
-                    # 3. Fill the rest of the k-shot support set from the chosen episode classes.
-                    remaining_shots = k - 1
-                    if remaining_shots > 0:
-                        pool = []
-                        for c in episode_classes:
-                            # Add all items from the chosen classes to the pool, excluding already used ones
-                            pool.extend(
-                                [item for item in class_dict[c] if item not in query_set and item not in support_set])
-
-                        if pool:
-                            support_set.extend(random.sample(pool, min(remaining_shots, len(pool))))
 
                 else:  # Regression
                     if len(task_data) < k + 1:
@@ -83,7 +81,7 @@ def test(model, test_tasks, num_shots_list, num_test_episodes=100):
                 with torch.no_grad():
                     predictions, true_labels = model(support_set, query_set, task_type)
 
-                if predictions is None: continue
+                if predictions is None or true_labels is None: continue
 
                 if task_type == 'classification':
                     pred_idx = torch.argmax(predictions, dim=1).cpu().numpy()
@@ -103,7 +101,7 @@ def test(model, test_tasks, num_shots_list, num_test_episodes=100):
                 print(f"[{k}-shot] Accuracy: {accuracy:.4f}")
                 results[task_type][k] = {'accuracy': accuracy}
             else:  # regression
-                # Filter out potential NaNs that might have slipped through
+                # Filter out potential NaNs
                 valid_preds = [p for p, l in zip(all_preds, all_labels) if not np.isnan(p) and not np.isnan(l)]
                 valid_labels = [l for p, l in zip(all_preds, all_labels) if not np.isnan(p) and not np.isnan(l)]
 
