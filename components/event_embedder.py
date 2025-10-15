@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+
 class EventEmbedder(nn.Module):
     """Embeds categorical and numerical event features into a single vector."""
 
@@ -12,7 +13,7 @@ class EventEmbedder(nn.Module):
         self.act_embed = nn.Embedding(cat_vocabs['activity'], d_model // 2)
         self.res_embed = nn.Embedding(cat_vocabs['resource'], d_model // 2)
 
-        # Normalize numeric features before the MLP (stabilizes scale considerably)
+        # --- FIX: Normalize numeric features before the MLP (stabilizes training) ---
         self.num_norm = nn.LayerNorm(num_feat_dim)
 
         # MLP for numerical features (cost, time_from_start, time_from_previous)
@@ -55,6 +56,8 @@ class EventEmbedder(nn.Module):
         # Numerical features
         num_arr = events_df[['cost', 'time_from_start', 'time_from_previous']].values
         num_feats = torch.as_tensor(num_arr, dtype=torch.float32, device=device)
+
+        # --- FIX: Apply normalization to raw numerical features ---
         num_feats = self.num_norm(num_feats)
         num_emb = self.num_mlp(num_feats)  # (seq_len, d_model)
 

@@ -45,7 +45,7 @@ class MetaLearner(nn.Module):
         all_embeddings = self.embedder(batch_df)  # (batch_size * max_len, d_model)
 
         # Reshape to (batch_size, max_len, d_model) for batch_first=True transformer
-        embeddings_reshaped = all_embeddings.view(len(batch_of_sequences), max_len, -1).to(device)
+        embeddings_reshaped = all_embeddings.view(len(batch_of_sequences), max_len, -1)
 
         mask_tensor = torch.tensor(masks, dtype=torch.bool, device=device)
 
@@ -84,9 +84,8 @@ class MetaLearner(nn.Module):
             # Map original query labels to the order of prototypes
             label_map = {original_label.item(): new_label for new_label, original_label in enumerate(proto_classes)}
 
-            # FIX: Use .get() to prevent KeyError if a query label is not in the support set.
-            # The model will be marked wrong, but the program will not crash.
-            # PyTorch's CrossEntropyLoss ignores targets with the value -100 by default.
+            # --- FIX: Use .get() to prevent KeyError if a query label is not in the support set. ---
+            # This prevents the training from crashing. PyTorch's loss functions ignore targets with the value -100.
             mapped_labels = [label_map.get(l.item(), -100) for l in query_labels_tensor]
             mapped_query_labels = torch.tensor(mapped_labels, device=all_encoded.device, dtype=torch.long)
 

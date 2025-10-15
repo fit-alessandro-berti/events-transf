@@ -40,7 +40,8 @@ class EventEncoder(nn.Module):
         super().__init__()
         self.pos_encoder = PositionalEncoding(d_model, dropout)
 
-        # FIX: Set batch_first=True to handle (batch, seq, feature) inputs directly.
+        # --- FIX: Set batch_first=True to handle (batch, seq, feature) inputs directly. ---
+        # --- IMPROVEMENT: Use 'gelu' activation, which often performs better in Transformers. ---
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model, nhead=n_heads, dropout=dropout, batch_first=True, activation='gelu'
         )
@@ -57,13 +58,12 @@ class EventEncoder(nn.Module):
             torch.Tensor: Encoded representation of the last valid token for each sequence.
                           Shape (batch_size, d_model)
         """
-        # Input is already (batch, seq, feature), no permutation needed.
         src = src * math.sqrt(self.d_model)
         src = self.pos_encoder(src)
 
         output = self.transformer_encoder(src, src_key_padding_mask=src_key_padding_mask)
 
-        # FIX: Robustly get the representation of the last *actual* event, not a padded one.
+        # --- FIX: Robustly get the representation of the last *actual* event, not a padded one. ---
         if src_key_padding_mask is not None:
             # Get the length of each sequence in the batch
             lengths = (~src_key_padding_mask).sum(dim=1)

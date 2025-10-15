@@ -2,10 +2,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
-
 
 def _l2_normalize(x: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """Performs L2 normalization on the last dimension of a tensor."""
     return x / x.norm(p=2, dim=-1, keepdim=True).clamp_min(eps)
 
 
@@ -26,29 +25,30 @@ class PrototypicalHead(nn.Module):
         if support_features.numel() == 0:
             return None, None
 
-        # Normalize features to use cosine similarity
+        # Normalize features to use cosine similarity, which is often more stable
         support_features = _l2_normalize(support_features)
         query_features = _l2_normalize(query_features)
 
         unique_classes = torch.unique(support_labels)
         prototypes = []
         for cls in unique_classes:
+            # Calculate prototype as the mean of support vectors for that class
             proto = support_features[support_labels == cls].mean(dim=0)
             prototypes.append(proto)
 
         prototypes = torch.stack(prototypes, dim=0)
-        prototypes = _l2_normalize(prototypes)
+        prototypes = _l2_normalize(prototypes) # Re-normalize the final prototypes
 
-        # Cosine similarity logits
+        # Cosine similarity is a simple dot product with normalized vectors
         logits = query_features @ prototypes.t()
 
         return F.log_softmax(logits, dim=1), unique_classes
 
     def forward_regression(self, support_features, support_labels, query_features, eps: float = 1e-6):
         """
-        FIX: Simplified and more robust kernel regression.
-        This version avoids matrix inversion (whitening), which can be numerically unstable
-        and was the likely source of NaN values. It uses a standard RBF kernel on
+        --- FIX: Simplified and more robust kernel regression. ---
+        This version avoids matrix inversion, which can be numerically unstable
+        and was a likely source of NaN values. It uses a standard RBF kernel on
         L2 distances with a median heuristic for bandwidth selection.
         """
         if support_features.numel() == 0 or query_features.numel() == 0:
@@ -61,20 +61,18 @@ class PrototypicalHead(nn.Module):
         # Calculate squared Euclidean distances between each query and all support points
         distances_sq = torch.cdist(query_features_norm, support_features_norm).pow(2)
 
-        # Median heuristic for RBF kernel bandwidth (gamma)
+        # Median heuristic for RBF kernel bandwidth (gamma), a robust method
         with torch.no_grad():
-            # Detach to not influence gradients through the bandwidth calculation
-            median_dist = torch.median(distances_sq)
+            median_dist = torch.median(distances_sq.detach())
 
-        # Fallback if median is zero or non-finite (e.g., all support points are identical)
+        # Fallback if median is zero (e.g., all support points are identical)
         if not torch.isfinite(median_dist) or median_dist <= 0:
             median_dist = distances_sq.mean()
 
-        # Add epsilon for numerical stability
         gamma = 1.0 / (median_dist + eps)
 
-        # Calculate kernel weights using softmax (ensures weights sum to 1)
-        # This is equivalent to an RBF kernel: exp(-gamma * dist^2)
+        # Calculate kernel weights using softmax, which is equivalent to an RBF kernel
+        # and ensures weights sum to 1. weights = exp(-gamma * dist^2)
         weights = F.softmax(-gamma * distances_sq, dim=1)
 
         # Prediction is the weighted average of the support labels

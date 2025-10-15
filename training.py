@@ -5,7 +5,8 @@ import torch.optim as optim
 import torch.nn.functional as F
 from tqdm import tqdm
 from collections import defaultdict
-import os # <-- Import the os module
+import os
+
 
 def create_episode(task_pool, num_shots_range, num_queries_per_class, num_ways_range=(2, 5)):
     """
@@ -81,13 +82,13 @@ def train(model, training_tasks, config):
                     config['num_queries']  # This now means queries *per class*
                 )
             else:  # Regression doesn't have classes, so simple sampling is fine
-                random.shuffle(task_data_pool)
-                num_shots = random.randint(config['num_shots_range'][0], config['num_shots_range'][1])
-                support_set = task_data_pool[:num_shots]
-                query_set = task_data_pool[num_shots: num_shots + config['num_queries']]
-                if len(query_set) < config['num_queries']:
+                if len(task_data_pool) < config['num_shots_range'][1] + config['num_queries']:
                     episode = None
                 else:
+                    random.shuffle(task_data_pool)
+                    num_shots = random.randint(config['num_shots_range'][0], config['num_shots_range'][1])
+                    support_set = task_data_pool[:num_shots]
+                    query_set = task_data_pool[num_shots: num_shots + config['num_queries']]
                     episode = (support_set, query_set)
 
             if episode is None or not episode[0] or not episode[1]:
@@ -99,13 +100,17 @@ def train(model, training_tasks, config):
 
             predictions, true_labels = model(support_set, query_set, task_type)
 
+            if predictions is None:
+                continue
+
             if task_type == 'classification':
                 loss = F.nll_loss(predictions, true_labels)
             else:  # regression
-                loss = F.mse_loss(predictions, true_labels)
+                loss = F.mse_loss(predictions.squeeze(), true_labels)
 
             if not torch.isnan(loss):
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # Gradient clipping
                 optimizer.step()
                 total_loss += loss.item()
 
