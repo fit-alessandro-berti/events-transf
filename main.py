@@ -1,5 +1,6 @@
 # main.py
 import numpy as np
+import torch
 from sklearn.metrics import accuracy_score, mean_absolute_error, r2_score
 from collections import Counter
 from data_generator import ProcessSimulator, get_task_data
@@ -26,7 +27,7 @@ CONFIG = {
     'epochs': 5,
     'episodes_per_epoch': 200,
 
-    # FIX: Increase test episodes for more stable evaluation
+    # Increase test episodes for more stable evaluation
     'num_test_episodes': 500,
 }
 
@@ -54,6 +55,10 @@ def calculate_baselines(test_tasks):
 
 
 def main():
+    # For reproducibility
+    torch.manual_seed(42)
+    np.random.seed(42)
+
     print("1. Generating data...")
     simulator = ProcessSimulator(num_cases=500)
 
@@ -104,7 +109,7 @@ def main():
     print("\n5. Starting testing...")
     test(model, test_tasks, CONFIG['num_shots_test'], CONFIG['num_test_episodes'])
 
-    # FIX: Add baseline evaluation for context
+    # Add baseline evaluation for context
     calculate_baselines(test_tasks)
 
 
