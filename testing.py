@@ -35,12 +35,13 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
             class_dict = defaultdict(list)
             for seq, label in task_data:
                 class_dict[label].append((seq, label))
-            class_dict = {c: items for c, items in class_dict.items() if len(items) >= 2}
+            # Filter classes to ensure enough examples for support + query
+            class_dict = {c: items for c, items in class_dict.items() if len(items) >= max(num_shots_list) + 1}
             available_classes = list(class_dict.keys())
             if len(available_classes) < 2:
                 print("Classification test skipped: Need at least 2 classes with sufficient examples.")
                 continue
-            N_WAYS_TEST = len(available_classes)
+            N_WAYS_TEST = min(len(available_classes), 7) # Use up to 7 classes, or fewer if not available
             print(f"Running classification test as a {N_WAYS_TEST}-way task.")
         # ------------------------------------
 
@@ -51,15 +52,24 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
             for _ in range(num_test_episodes):
                 support_set, query_set = [], []
 
+                # --- FIX: Replaced flawed episode creation with correct N-way, K-shot sampling ---
                 if task_type == 'classification':
-                    pool = [item for c in available_classes for item in class_dict[c]]
-                    if not pool: continue
-                    query_example = random.choice(pool)
-                    support_pool = [item for item in pool if item != query_example]
-                    if len(support_pool) < k: continue
-                    support_set = random.sample(support_pool, k)
-                    query_set = [query_example]
-                else:  # Regression
+                    # Ensure we have enough classes with enough samples (k for support, 1 for query)
+                    eligible_classes = [c for c, items in class_dict.items() if len(items) >= k + 1]
+                    if len(eligible_classes) < N_WAYS_TEST:
+                        continue  # Skip if we can't form a full N-way episode
+
+                    episode_classes = random.sample(eligible_classes, N_WAYS_TEST)
+
+                    for cls in episode_classes:
+                        samples = random.sample(class_dict[cls], k + 1)
+                        support_set.extend(samples[:k])
+                        query_set.append(samples[k]) # Use the last one for the query
+
+                    random.shuffle(support_set)
+                    random.shuffle(query_set)
+
+                else:  # Regression (original logic is fine)
                     if len(task_data) < k + 1: continue
                     random.shuffle(task_data)
                     support_set = task_data[:k]
@@ -72,6 +82,9 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
                     predictions, true_labels = model(support_set, query_set, task_type)
 
                 if predictions is None or true_labels is None: continue
+
+                # Ignore episodes where all query labels were un-mappable (e.g., due to edge cases)
+                if torch.all(true_labels == -100): continue
 
                 if task_type == 'classification':
                     pred_idx = torch.argmax(predictions, dim=1).cpu().numpy()
@@ -87,7 +100,16 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
 
             # Compute metrics
             if task_type == 'classification':
-                accuracy = accuracy_score(all_labels, all_preds)
+                # Filter out any -100 labels that might have slipped through before calculating accuracy
+                valid_indices = [i for i, label in enumerate(all_labels) if label != -100]
+                if not valid_indices:
+                    print(f"[{k}-shot] Accuracy: NaN (No valid predictions)")
+                    continue
+
+                valid_labels = np.array(all_labels)[valid_indices]
+                valid_preds = np.array(all_preds)[valid_indices]
+
+                accuracy = accuracy_score(valid_labels, valid_preds)
                 print(f"[{k}-shot] Accuracy: {accuracy:.4f}")
                 results[task_type][k] = {'accuracy': accuracy}
             else:
