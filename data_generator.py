@@ -64,15 +64,22 @@ class XESLogLoader:
         self.vocab['activity'] = sorted(list(combined_df[activity_key].unique()))
         self.activity_map = {name: i for i, name in enumerate(self.vocab['activity'])}
 
-        # Optional attribute: Resource
+        # --- FIXED: Robust handling of the Resource attribute ---
+        resource_vocab_set = set()
         if resource_key in combined_df.columns:
             print(f"Found resource attribute '{resource_key}'.")
+            # Fill missing values and add all unique resources from the data to the set
             combined_df[resource_key] = combined_df[resource_key].fillna('Unknown')
-            self.vocab['resource'] = sorted(list(combined_df[resource_key].unique()))
+            resource_vocab_set.update(combined_df[resource_key].unique())
         else:
             print(f"⚠️ Warning: Resource attribute '{resource_key}' not found. Using a single placeholder.")
-            self.vocab['resource'] = ['Unknown']
+
+        # ALWAYS ensure 'Unknown' is in the vocabulary to serve as a reliable fallback.
+        resource_vocab_set.add('Unknown')
+
+        self.vocab['resource'] = sorted(list(resource_vocab_set))
         self.resource_map = {name: i for i, name in enumerate(self.vocab['resource'])}
+        # --- End of fix ---
 
         # Check for optional cost attribute
         if cost_key in combined_df.columns:
@@ -112,6 +119,7 @@ class XESLogLoader:
                 # --- Handle optional attributes gracefully ---
                 # Get resource, defaulting to 'Unknown' if column or value is missing
                 resource_name = event.get(resource_key, 'Unknown')
+                # This line is now safe because 'Unknown' is guaranteed to be in the map
                 resource_id = self.resource_map.get(resource_name, self.resource_map['Unknown'])
 
                 # Get cost, generating a random one if column or value is missing/invalid
@@ -193,7 +201,7 @@ if __name__ == '__main__':
     log_dir = './logs'
     all_paths = {
         'running-example': os.path.join(log_dir, '01_running-example.xes.gz'),
-        'reviewing': os.path.join(log_dir, '04_reviewing.xes.gz'),
+        'teleclaims': os.path.join(log_dir, '02_teleclaims.xes.gz'),
     }
 
     # Check if the 'logs' directory exists
@@ -208,7 +216,7 @@ if __name__ == '__main__':
         loader.load_logs(all_paths)
 
         # --- Display sample from a loaded log ---
-        log_a_data = loader.get_log('A')
+        log_a_data = loader.get_log('teleclaims')
         if not log_a_data:
             print("\nLog 'A' could not be loaded. Please check the file path and format.")
         else:
