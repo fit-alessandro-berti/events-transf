@@ -1,9 +1,11 @@
+# components/meta_learner.py
 import torch
 import torch.nn as nn
 import pandas as pd
 from .event_embedder import EventEmbedder
 from .event_encoder import EventEncoder
 from .prototypical_head import PrototypicalHead
+
 
 class MetaLearner(nn.Module):
     """
@@ -54,14 +56,6 @@ class MetaLearner(nn.Module):
     def forward(self, support_set, query_set, task_type):
         """
         Processes a meta-learning episode.
-
-        Args:
-            support_set (list): List of (sequence, label) tuples.
-            query_set (list): List of (sequence, label) tuples.
-            task_type (str): 'classification' or 'regression'.
-
-        Returns:
-            Tuple: (predictions, true_labels)
         """
         support_seqs = [s[0] for s in support_set]
         support_labels = [s[1] for s in support_set]
@@ -84,9 +78,17 @@ class MetaLearner(nn.Module):
                 support_features, support_labels_tensor, query_features
             )
 
+            if log_probs is None:
+                return None, None
+
             # Map original query labels to the order of prototypes
             label_map = {original_label.item(): new_label for new_label, original_label in enumerate(proto_classes)}
-            mapped_query_labels = torch.tensor([label_map[l.item()] for l in query_labels_tensor], device=all_encoded.device)
+
+            # FIX: Use .get() to prevent KeyError if a query label is not in the support set.
+            # The model will be marked wrong, but the program will not crash.
+            # PyTorch's CrossEntropyLoss ignores targets with the value -100 by default.
+            mapped_labels = [label_map.get(l.item(), -100) for l in query_labels_tensor]
+            mapped_query_labels = torch.tensor(mapped_labels, device=all_encoded.device, dtype=torch.long)
 
             return log_probs, mapped_query_labels
 
