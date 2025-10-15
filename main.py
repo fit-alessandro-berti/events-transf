@@ -6,10 +6,11 @@ from collections import Counter
 
 # --- Import from project files ---
 from config import CONFIG
-from data_generator import ProcessSimulator, get_task_data
+from data_generator import XESLogLoader, get_task_data
 from components.meta_learner import MetaLearner
 from training import train
-from testing import evaluate_model # <-- Use the new evaluation function
+from testing import evaluate_model
+
 
 def calculate_baselines(test_tasks):
     """Calculates performance for trivial baseline models."""
@@ -38,32 +39,30 @@ def main():
     torch.manual_seed(42)
     np.random.seed(42)
 
-    print("1. Generating data...")
-    simulator = ProcessSimulator(num_cases=500)
+    print("1. Loading data from XES files...")
+    # --- Load all logs to build a unified vocabulary ---
+    # The loader needs all paths (training + testing) to create a complete vocabulary
+    all_paths = {**CONFIG['log_paths']['training'], **CONFIG['log_paths']['testing']}
 
-    cat_vocabs = {
-        'activity': len(simulator.vocab['activity']),
-        'resource': len(simulator.vocab['resource']),
-    }
+    loader = XESLogLoader()
+    loader.load_logs(all_paths)
 
-    log_a = simulator.generate_data_for_model('A')
-    log_b = simulator.generate_data_for_model('B')
-    log_c = simulator.generate_data_for_model('C')
+    # Get vocabularies and individual logs from the loader
+    cat_vocabs = loader.get_vocabs()
+
+    # Dynamically retrieve training logs based on keys in config
+    training_logs = {name: loader.get_log(name) for name in CONFIG['log_paths']['training']}
+
+    if not all(training_logs.values()):
+        print("\n❌ Error: One or more training logs could not be loaded. Please check file paths in './logs/'.")
+        return
 
     training_tasks = {
-        'classification': [
-            get_task_data(log_a, 'classification'),
-            get_task_data(log_b, 'classification'),
-            get_task_data(log_c, 'classification'),
-        ],
-        'regression': [
-            get_task_data(log_a, 'regression'),
-            get_task_data(log_b, 'regression'),
-            get_task_data(log_c, 'regression'),
-        ]
+        'classification': [get_task_data(log, 'classification') for log in training_logs.values()],
+        'regression': [get_task_data(log, 'regression') for log in training_logs.values()]
     }
 
-    print("2. Initializing model...")
+    print("\n2. Initializing model...")
     model = MetaLearner(
         cat_vocabs=cat_vocabs,
         num_feat_dim=CONFIG['num_numerical_features'],
@@ -79,14 +78,20 @@ def main():
     train(model, training_tasks, CONFIG)
 
     print("\n4. Preparing test data from an unseen process...")
-    unseen_log = simulator.generate_data_for_model('D_unseen')
+    # Get the name of the test log (assumes one for simplicity)
+    test_log_name = list(CONFIG['log_paths']['testing'].keys())[0]
+    unseen_log = loader.get_log(test_log_name)
+
+    if not unseen_log:
+        print(f"\n❌ Error: Test log '{test_log_name}' could not be loaded. Please check the file path in './logs/'.")
+        return
+
     test_tasks = {
         'classification': get_task_data(unseen_log, 'classification'),
         'regression': get_task_data(unseen_log, 'regression')
     }
 
     print("\n5. Starting testing...")
-    # --- MODIFIED: Call the new evaluation function ---
     evaluate_model(model, test_tasks, CONFIG['num_shots_test'], CONFIG['num_test_episodes'])
 
     # Add baseline evaluation for context

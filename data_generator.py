@@ -4,6 +4,10 @@ import random
 import pm4py
 import os
 
+# --- Import from project files ---
+# This is needed for the stand-alone execution block
+from config import CONFIG
+
 
 class XESLogLoader:
     """
@@ -64,11 +68,10 @@ class XESLogLoader:
         self.vocab['activity'] = sorted(list(combined_df[activity_key].unique()))
         self.activity_map = {name: i for i, name in enumerate(self.vocab['activity'])}
 
-        # --- FIXED: Robust handling of the Resource attribute ---
+        # Robust handling of the Resource attribute
         resource_vocab_set = set()
         if resource_key in combined_df.columns:
             print(f"Found resource attribute '{resource_key}'.")
-            # Fill missing values and add all unique resources from the data to the set
             combined_df[resource_key] = combined_df[resource_key].fillna('Unknown')
             resource_vocab_set.update(combined_df[resource_key].unique())
         else:
@@ -79,7 +82,6 @@ class XESLogLoader:
 
         self.vocab['resource'] = sorted(list(resource_vocab_set))
         self.resource_map = {name: i for i, name in enumerate(self.vocab['resource'])}
-        # --- End of fix ---
 
         # Check for optional cost attribute
         if cost_key in combined_df.columns:
@@ -99,9 +101,7 @@ class XESLogLoader:
         """Converts a DataFrame into a list of traces with computed features."""
         processed_log = []
 
-        # Ensure timestamps are timezone-naive for consistent calculations
         df[timestamp_key] = pd.to_datetime(df[timestamp_key]).dt.tz_localize(None)
-
         df_grouped = df.groupby(case_id_key)
 
         for case_id, trace_df in df_grouped:
@@ -116,18 +116,13 @@ class XESLogLoader:
             for _, event in trace_df.iterrows():
                 current_time = event[timestamp_key]
 
-                # --- Handle optional attributes gracefully ---
-                # Get resource, defaulting to 'Unknown' if column or value is missing
                 resource_name = event.get(resource_key, 'Unknown')
-                # This line is now safe because 'Unknown' is guaranteed to be in the map
                 resource_id = self.resource_map.get(resource_name, self.resource_map['Unknown'])
 
-                # Get cost, generating a random one if column or value is missing/invalid
                 cost_val = event.get(cost_key, round(random.uniform(5.0, 100.0), 2))
                 if not isinstance(cost_val, (int, float)):
                     cost_val = round(random.uniform(5.0, 100.0), 2)
 
-                # Create the event dictionary required by the model
                 event_dict = {
                     'case_id': case_id,
                     'activity': self.activity_map.get(event[activity_key]),
@@ -160,14 +155,13 @@ class XESLogLoader:
 def get_task_data(log, task_type, max_seq_len=10):
     """
     Creates subsequences and corresponding labels for a given task.
-    (This function is generic and works with loaded XES data)
     """
     tasks = []
     if not log:
         return tasks
 
     for trace in log:
-        if len(trace) < 3: continue  # Need at least a prefix and a next event
+        if len(trace) < 3: continue
 
         for i in range(1, len(trace) - 1):
             prefix = trace[:i + 1]
@@ -175,11 +169,9 @@ def get_task_data(log, task_type, max_seq_len=10):
                 prefix = prefix[-max_seq_len:]
 
             if task_type == 'classification':
-                # Predict the next activity
                 label = trace[i + 1]['activity']
                 tasks.append((prefix, label))
             elif task_type == 'regression':
-                # Predict remaining time until case end
                 last_event_time = trace[-1]['timestamp']
                 current_event_time = prefix[-1]['timestamp']
                 label = (last_event_time - current_event_time) / 3600.0  # in hours
@@ -188,35 +180,25 @@ def get_task_data(log, task_type, max_seq_len=10):
     return tasks
 
 
-# --- Direct Execution Block ---
+# --- Direct Execution Block (for demonstration) ---
 if __name__ == '__main__':
     print("--- Demonstrating Flexible XES Log Loader ---")
-    # NOTE: You must provide your own XES files for this demonstration.
-    # Create a directory named 'logs' in your project root and place your XES files there.
-    # Example file structure:
-    # ./logs/log_A.xes          (contains 'org:resource')
-    # ./logs/log_B.xes          (contains 'org:resource' and 'amount')
-    # ./logs/log_unseen.xes     (missing 'org:resource' and 'amount')
 
+    # --- MODIFIED: Load paths from the central CONFIG file ---
+    all_paths = {**CONFIG['log_paths']['training'], **CONFIG['log_paths']['testing']}
+
+    # Check if the 'logs' directory and files exist
     log_dir = './logs'
-    all_paths = {
-        'running-example': os.path.join(log_dir, '01_running-example.xes.gz'),
-        'teleclaims': os.path.join(log_dir, '02_teleclaims.xes.gz'),
-    }
-
-    # Check if the 'logs' directory exists
     if not os.path.isdir(log_dir) or not any(os.path.exists(p) for p in all_paths.values()):
         print("\n❌ CRITICAL: No XES files found in the './logs' directory.")
-        print(
-            "Please create a 'logs' directory in your project root and add at least one .xes file to run this script.")
+        print("Please create a 'logs' directory and add .xes files as defined in config.py to run this script.")
     else:
-        # --- Run the XESLogLoader Demo ---
+        # Run the XESLogLoader Demo
         loader = XESLogLoader()
-        # The loader will now check for 'org:resource' and 'amount' keys automatically.
         loader.load_logs(all_paths)
 
-        # --- Display sample from a loaded log ---
-        log_a_data = loader.get_log('teleclaims')
+        # Display sample from a loaded log (e.g., log 'A')
+        log_a_data = loader.get_log('A')
         if not log_a_data:
             print("\nLog 'A' could not be loaded. Please check the file path and format.")
         else:

@@ -1,5 +1,23 @@
+# config.py
+import os
+
+# Define the base directory for logs
+LOG_DIR = './logs'
+
 # --- Configuration ---
 CONFIG = {
+    # --- Data Configuration ---
+    'log_paths': {
+        'training': {
+            'A': os.path.join(LOG_DIR, '01_running-example.xes.gz'),
+            'B': os.path.join(LOG_DIR, '04_reviewing.xes.gz'),
+            'C': os.path.join(LOG_DIR, '03_repairExample.xes.gz'),
+        },
+        'testing': {
+            'D_unseen': os.path.join(LOG_DIR, '01_running-example.xes.gz')
+        }
+    },
+
     # Model Hyperparameters (Increased capacity)
     'd_model': 128,
     'n_heads': 8,

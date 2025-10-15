@@ -9,7 +9,7 @@ import re
 
 # --- Stand-alone execution imports ---
 from config import CONFIG
-from data_generator import ProcessSimulator, get_task_data
+from data_generator import XESLogLoader, get_task_data
 from components.meta_learner import MetaLearner
 
 
@@ -110,38 +110,34 @@ if __name__ == '__main__':
     # 1. Find the latest checkpoint
     checkpoint_dir = './checkpoints'
     if not os.path.isdir(checkpoint_dir):
-        print(f"Error: Checkpoint directory '{checkpoint_dir}' not found. Please train a model first.")
+        print(f"❌ Error: Checkpoint directory '{checkpoint_dir}' not found. Please train a model first.")
         exit()
 
     checkpoints = [f for f in os.listdir(checkpoint_dir) if f.startswith('model_epoch_') and f.endswith('.pth')]
     if not checkpoints:
-        print(f"Error: No checkpoints found in '{checkpoint_dir}'.")
+        print(f"❌ Error: No checkpoints found in '{checkpoint_dir}'.")
         exit()
 
-    # Extract epoch numbers and find the latest one
-    epoch_map = {}
-    for chkpt in checkpoints:
-        match = re.search(r'model_epoch_(\d+).pth', chkpt)
-        if match:
-            epoch_map[int(match.group(1))] = chkpt
-
+    epoch_map = {int(re.search(r'model_epoch_(\d+).pth', f).group(1)): f for f in checkpoints if
+                 re.search(r'model_epoch_(\d+).pth', f)}
     latest_epoch = max(epoch_map.keys())
     latest_checkpoint_file = epoch_map[latest_epoch]
     latest_checkpoint_path = os.path.join(checkpoint_dir, latest_checkpoint_file)
 
     print(f"🔍 Found latest checkpoint: {latest_checkpoint_file}")
 
-    # 2. Initialize model architecture from CONFIG
+    # 2. Load data and build vocabulary for model initialization
+    print("\n📦 Loading logs to build vocabulary and get test data...")
+    # NOTE: Load ALL potential logs to ensure vocabulary consistency with training.
+    all_paths = {**CONFIG['log_paths']['training'], **CONFIG['log_paths']['testing']}
+
+    loader = XESLogLoader()
+    loader.load_logs(all_paths)
+    cat_vocabs = loader.get_vocabs()
+
+    # 3. Initialize model architecture and load weights
     torch.manual_seed(42)
     np.random.seed(42)
-
-    # We need a simulator instance to get vocabulary sizes for model initialization
-    temp_simulator = ProcessSimulator(num_cases=1)
-    cat_vocabs = {
-        'activity': len(temp_simulator.vocab['activity']),
-        'resource': len(temp_simulator.vocab['resource']),
-    }
-
     model = MetaLearner(
         cat_vocabs=cat_vocabs,
         num_feat_dim=CONFIG['num_numerical_features'],
@@ -150,15 +146,17 @@ if __name__ == '__main__':
         n_layers=CONFIG['n_layers'],
         dropout=CONFIG['dropout']
     )
-
-    # 3. Load the checkpoint weights
     print(f"💾 Loading weights from {latest_checkpoint_path}...")
     model.load_state_dict(torch.load(latest_checkpoint_path))
 
-    # 4. Generate fresh test data
-    print("\n📦 Generating new test data from an unseen process...")
-    simulator = ProcessSimulator(num_cases=CONFIG['num_cases_for_testing'])
-    unseen_log = simulator.generate_data_for_model('D_unseen')
+    # 4. Get the test data from the loader
+    test_log_name = list(CONFIG['log_paths']['testing'].keys())[0]
+    unseen_log = loader.get_log(test_log_name)
+
+    if not unseen_log:
+        print(f"❌ Error: Test log '{test_log_name}' could not be loaded. Please check file path in './logs/'.")
+        exit()
+
     test_tasks = {
         'classification': get_task_data(unseen_log, 'classification'),
         'regression': get_task_data(unseen_log, 'regression')
