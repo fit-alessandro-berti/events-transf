@@ -19,7 +19,7 @@ class PrototypicalHead(nn.Module):
 
     def forward_classification(self, support_features, support_labels, query_features):
         """
-        Calculates log-probabilities for the query samples using cosine-similarity
+        Calculates logits for the query samples using cosine-similarity
         prototypes built from support features.
         """
         if support_features.numel() == 0:
@@ -39,10 +39,11 @@ class PrototypicalHead(nn.Module):
         prototypes = torch.stack(prototypes, dim=0)
         prototypes = _l2_normalize(prototypes) # Re-normalize the final prototypes
 
-        # Cosine similarity is a simple dot product with normalized vectors
+        # Cosine similarity is a simple dot product with normalized vectors.
+        # Output raw logits for use with F.cross_entropy.
         logits = query_features @ prototypes.t()
 
-        return F.log_softmax(logits, dim=1), unique_classes
+        return logits, unique_classes
 
     def forward_regression(self, support_features, support_labels, query_features, eps: float = 1e-6):
         """

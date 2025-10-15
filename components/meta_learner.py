@@ -23,7 +23,9 @@ class MetaLearner(nn.Module):
         device = next(self.parameters()).device
 
         # Pad sequences to the same length
-        max_len = max(len(seq) for seq in batch_of_sequences)
+        max_len = max(len(seq) for seq in batch_of_sequences) if batch_of_sequences else 0
+        if max_len == 0:
+            return torch.tensor([], device=device)
 
         padded_dfs = []
         masks = []
@@ -64,6 +66,9 @@ class MetaLearner(nn.Module):
 
         # Encode all sequences
         all_seqs = support_seqs + query_seqs
+        if not all_seqs:
+            return None, None
+
         all_encoded = self._process_batch(all_seqs)
 
         num_support = len(support_seqs)
@@ -74,11 +79,11 @@ class MetaLearner(nn.Module):
             support_labels_tensor = torch.LongTensor(support_labels).to(all_encoded.device)
             query_labels_tensor = torch.LongTensor(query_labels).to(all_encoded.device)
 
-            log_probs, proto_classes = self.proto_head.forward_classification(
+            predictions, proto_classes = self.proto_head.forward_classification(
                 support_features, support_labels_tensor, query_features
             )
 
-            if log_probs is None:
+            if predictions is None:
                 return None, None
 
             # Map original query labels to the order of prototypes
@@ -89,7 +94,7 @@ class MetaLearner(nn.Module):
             mapped_labels = [label_map.get(l.item(), -100) for l in query_labels_tensor]
             mapped_query_labels = torch.tensor(mapped_labels, device=all_encoded.device, dtype=torch.long)
 
-            return log_probs, mapped_query_labels
+            return predictions, mapped_query_labels
 
         elif task_type == 'regression':
             support_labels_tensor = torch.as_tensor(support_labels, dtype=torch.float32, device=all_encoded.device)

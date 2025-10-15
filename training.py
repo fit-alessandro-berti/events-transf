@@ -104,9 +104,9 @@ def train(model, training_tasks, config):
                 continue
 
             if task_type == 'classification':
-                loss = F.nll_loss(predictions, true_labels)
+                loss = F.cross_entropy(predictions, true_labels, ignore_index=-100)
             else:  # regression
-                loss = F.mse_loss(predictions.squeeze(), true_labels)
+                loss = F.huber_loss(predictions.squeeze(), true_labels)
 
             if not torch.isnan(loss):
                 loss.backward()
@@ -116,7 +116,7 @@ def train(model, training_tasks, config):
 
             progress_bar.set_postfix(loss=f"{loss.item():.4f}", task=task_type)
 
-        avg_loss = total_loss / config['episodes_per_epoch']
+        avg_loss = total_loss / config['episodes_per_epoch'] if config['episodes_per_epoch'] > 0 else 0
         print(f"Epoch {epoch + 1} finished. Average Loss: {avg_loss:.4f}")
 
         # --- ADDED: Save the model checkpoint at the end of the epoch ---
