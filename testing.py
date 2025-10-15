@@ -1,6 +1,7 @@
 # testing.py
 import torch
 import random
+import numpy as np
 from sklearn.metrics import accuracy_score, mean_absolute_error, r2_score
 from collections import defaultdict
 
