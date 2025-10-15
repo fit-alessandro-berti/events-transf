@@ -1,9 +1,7 @@
-# testing.py
 import torch
 import random
 from sklearn.metrics import accuracy_score, mean_absolute_error, r2_score
 from collections import defaultdict
-
 
 def test(model, test_tasks, num_shots_list, num_test_episodes=100):
     """
@@ -14,7 +12,7 @@ def test(model, test_tasks, num_shots_list, num_test_episodes=100):
     results = {}
 
     for task_type, task_data in test_tasks.items():
-        print(f"\n--- Evaluating task: {task_type.upper()} ---")
+        print(f"\n--- Evaluating task: {task_type.UPPER()} ---")
         results[task_type] = {}
 
         if task_type == 'classification':
@@ -33,7 +31,7 @@ def test(model, test_tasks, num_shots_list, num_test_episodes=100):
             for _ in range(num_test_episodes):
                 support_set, query_set = [], []
 
-                # FIX: Implement a robust episode creation logic for testing
+                # Robust episode creation logic for testing
                 if task_type == 'classification':
                     # 1. Select a random class that has enough examples
                     query_class = random.choice(list(class_dict.keys()))
@@ -60,9 +58,10 @@ def test(model, test_tasks, num_shots_list, num_test_episodes=100):
                     if len(support_set) < k:
                         continue  # Skip if we couldn't build a full k-shot support set
 
-                else:  # Regression logic is simpler and remains the same
+                else:  # Regression
                     random.shuffle(task_data)
-                    if len(task_data) < k + 1: continue
+                    if len(task_data) < k + 1:
+                        continue
                     support_set = task_data[:k]
                     query_set = task_data[k:k + 1]
 
@@ -73,20 +72,14 @@ def test(model, test_tasks, num_shots_list, num_test_episodes=100):
                     predictions, true_labels = model(support_set, query_set, task_type)
 
                 if task_type == 'classification':
-                    preds = torch.argmax(predictions, dim=1)
-                    support_features_encoded = model._process_batch([s[0] for s in support_set])
-                    query_features_encoded = model._process_batch([q[0] for q in query_set])
-                    _, proto_classes = model.proto_head.forward_classification(
-                        support_features_encoded,
-                        torch.LongTensor([s[1] for s in support_set]),
-                        query_features_encoded
-                    )
-                    original_pred = proto_classes[preds.item()].item()
-                    all_preds.append(original_pred)
-                    all_labels.append(query_set[0][1])
+                    # predictions are log-probs over the *episode's* prototype order,
+                    # and true_labels are already mapped to that order by the model.
+                    pred_idx = torch.argmax(predictions, dim=1).item()
+                    all_preds.append(pred_idx)
+                    all_labels.append(int(true_labels[0].item()))
                 else:  # regression
-                    all_preds.extend(predictions.tolist())
-                    all_labels.extend(true_labels.tolist())
+                    all_preds.extend([float(p) for p in predictions.view(-1).tolist()])
+                    all_labels.extend([float(t) for t in true_labels.view(-1).tolist()])
 
             if not all_labels:
                 print(f"Could not generate valid episodes to test with K={k} shots.")
