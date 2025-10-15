@@ -39,32 +39,14 @@ def main():
     torch.manual_seed(42)
     np.random.seed(42)
 
-    print("1. Loading data from XES files...")
-    # --- Load all logs to build a unified vocabulary ---
-    # The loader needs all paths (training + testing) to create a complete vocabulary
+    print("1. Loading raw data from XES files...")
     all_paths = {**CONFIG['log_paths']['training'], **CONFIG['log_paths']['testing']}
-
     loader = XESLogLoader()
     loader.load_logs(all_paths)
 
-    # Get vocabularies and individual logs from the loader
-    cat_vocabs = loader.get_vocabs()
-
-    # Dynamically retrieve training logs based on keys in config
-    training_logs = {name: loader.get_log(name) for name in CONFIG['log_paths']['training']}
-
-    if not all(training_logs.values()):
-        print("\n❌ Error: One or more training logs could not be loaded. Please check file paths in './logs/'.")
-        return
-
-    training_tasks = {
-        'classification': [get_task_data(log, 'classification') for log in training_logs.values()],
-        'regression': [get_task_data(log, 'regression') for log in training_logs.values()]
-    }
-
-    print("\n2. Initializing model...")
+    print("\n2. Initializing model with fixed vocabulary sizes...")
     model = MetaLearner(
-        cat_vocabs=cat_vocabs,
+        cat_vocabs=CONFIG['fixed_vocab_sizes'],
         num_feat_dim=CONFIG['num_numerical_features'],
         d_model=CONFIG['d_model'],
         n_heads=CONFIG['n_heads'],
@@ -74,18 +56,21 @@ def main():
 
     print(f"Model has {sum(p.numel() for p in model.parameters() if p.requires_grad):,} trainable parameters.")
 
-    print("\n3. Starting training...")
-    train(model, training_tasks, CONFIG)
+    print("\n3. Starting training (with dynamic per-epoch remapping)...")
+    train(model, loader, CONFIG)
 
-    print("\n4. Preparing test data from an unseen process...")
-    # Get the name of the test log (assumes one for simplicity)
+    print("\n4. Preparing test data (with a new fixed random mapping)...")
     test_log_name = list(CONFIG['log_paths']['testing'].keys())[0]
+
+    # Generate a single, fixed random mapping for the entire test phase
+    loader.remap_logs(CONFIG['fixed_vocab_sizes'])
     unseen_log = loader.get_log(test_log_name)
 
     if not unseen_log:
         print(f"\n❌ Error: Test log '{test_log_name}' could not be loaded. Please check the file path in './logs/'.")
         return
 
+    # Create test tasks based on this fixed mapping
     test_tasks = {
         'classification': get_task_data(unseen_log, 'classification'),
         'regression': get_task_data(unseen_log, 'regression')
