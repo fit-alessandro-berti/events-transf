@@ -12,7 +12,7 @@ def test(model, test_tasks, num_shots_list, num_test_episodes=100):
     results = {}
 
     for task_type, task_data in test_tasks.items():
-        print(f"\n--- Evaluating task: {task_type.UPPER()} ---")
+        print(f"\n--- Evaluating task: {task_type} ---")
         results[task_type] = {}
 
         if task_type == 'classification':
