@@ -11,11 +11,13 @@ def _l2_normalize(x: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
 class PrototypicalHead(nn.Module):
     """
     Performs prediction using class prototypes (classification) or
-    kernel regression (regression). This module has no trainable parameters.
+    kernel regression (regression). This module has almost no trainable params.
     """
 
-    def __init__(self):
+    def __init__(self, init_logit_scale: float = 10.0):
         super().__init__()
+        # NEW: learnable temperature for cosine logits (helps early convergence/calibration).
+        self.logit_scale = nn.Parameter(torch.tensor(float(init_logit_scale)))
 
     def forward_classification(self, support_features, support_labels, query_features):
         """
@@ -37,20 +39,18 @@ class PrototypicalHead(nn.Module):
             prototypes.append(proto)
 
         prototypes = torch.stack(prototypes, dim=0)
-        prototypes = _l2_normalize(prototypes) # Re-normalize the final prototypes
+        prototypes = _l2_normalize(prototypes)  # Re-normalize the final prototypes
 
         # Cosine similarity is a simple dot product with normalized vectors.
-        # Output raw logits for use with F.cross_entropy.
-        logits = query_features @ prototypes.t()
+        # Apply learnable temperature to control margin/sharpness of logits.
+        scale = self.logit_scale.clamp(1.0, 100.0)
+        logits = (query_features @ prototypes.t()) * scale
 
         return logits, unique_classes
 
     def forward_regression(self, support_features, support_labels, query_features, eps: float = 1e-6):
         """
-        --- FIX: Simplified and more robust kernel regression. ---
-        This version avoids matrix inversion, which can be numerically unstable
-        and was a likely source of NaN values. It uses a standard RBF kernel on
-        L2 distances with a median heuristic for bandwidth selection.
+        Simplified and robust kernel regression with an RBF-like weighting via softmax.
         """
         if support_features.numel() == 0 or query_features.numel() == 0:
             return torch.zeros(query_features.size(0), device=query_features.device)

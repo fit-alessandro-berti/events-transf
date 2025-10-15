@@ -33,48 +33,60 @@ class PositionalEncoding(nn.Module):
 
 class EventEncoder(nn.Module):
     """
-    Encodes a sequence of event embeddings using a Transformer Encoder.
+    Encodes a sequence of event embeddings using a Transformer Encoder and
+    aggregates them with a light attention-pooling head (mask-aware).
     """
 
     def __init__(self, d_model, n_heads, n_layers, dropout=0.1):
         super().__init__()
         self.pos_encoder = PositionalEncoding(d_model, dropout)
+        self.d_model = d_model
 
-        # --- FIX: Set batch_first=True to handle (batch, seq, feature) inputs directly. ---
-        # --- IMPROVEMENT: Use 'gelu' activation, which often performs better in Transformers. ---
+        # NEW: Use Pre-Norm (norm_first=True) for more stable optimization.
+        # NEW: Keep the feed-forward width small and proportional to d_model.
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model, nhead=n_heads, dropout=dropout, batch_first=True, activation='gelu'
+            d_model=d_model,
+            nhead=n_heads,
+            dim_feedforward=max(4 * d_model, d_model),  # 4x width keeps model small & stable
+            dropout=dropout,
+            batch_first=True,
+            activation='gelu',
+            norm_first=True
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
-        self.d_model = d_model
+
+        # NEW: Attention pooling over time to produce a robust sequence representation.
+        self.attn_pool = nn.Linear(d_model, 1)
+        self.out_norm = nn.LayerNorm(d_model)
 
     def forward(self, src, src_key_padding_mask=None):
         """
         Args:
             src (torch.Tensor): Shape (batch_size, seq_len, d_model)
-            src_key_padding_mask (torch.Tensor, optional): Shape (batch_size, seq_len)
+            src_key_padding_mask (torch.Tensor, optional): Shape (batch_size, seq_len), True for pads.
 
         Returns:
-            torch.Tensor: Encoded representation of the last valid token for each sequence.
+            torch.Tensor: Aggregated representation for each sequence.
                           Shape (batch_size, d_model)
         """
+        # Standard Transformer scaling before adding positions
         src = src * math.sqrt(self.d_model)
         src = self.pos_encoder(src)
 
+        # Encode
         output = self.transformer_encoder(src, src_key_padding_mask=src_key_padding_mask)
+        # output: (B, T, d_model)
 
-        # --- FIX: Robustly get the representation of the last *actual* event, not a padded one. ---
+        # Mask-aware attention pooling over time
+        attn_logits = self.attn_pool(output).squeeze(-1)  # (B, T)
         if src_key_padding_mask is not None:
-            # Get the length of each sequence in the batch
-            lengths = (~src_key_padding_mask).sum(dim=1)
-            # Create indices for batch dimension
-            batch_indices = torch.arange(output.size(0), device=output.device)
-            # Clamp lengths to avoid index -1 for empty sequences (edge case)
-            last_token_indices = torch.clamp(lengths - 1, min=0)
-            # Select the hidden state at the last time step for each sequence
-            encoded = output[batch_indices, last_token_indices]
-        else:
-            # If no mask, all sequences have full length
-            encoded = output[:, -1, :]
+            attn_logits = attn_logits.masked_fill(src_key_padding_mask, float('-inf'))
 
+        # Softmax across time; if a row had all pads (shouldn't happen), softmax would be NaN,
+        # but upstream guarantees at least one valid token per sequence.
+        attn_weights = torch.softmax(attn_logits, dim=1)  # (B, T)
+        encoded = (attn_weights.unsqueeze(-1) * output).sum(dim=1)  # (B, d_model)
+
+        # Final normalization for stability
+        encoded = self.out_norm(encoded)
         return encoded
