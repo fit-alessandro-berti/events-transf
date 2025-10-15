@@ -10,11 +10,12 @@ CONFIG = {
     'log_paths': {
         'training': {
             'A': os.path.join(LOG_DIR, '01_running-example.xes.gz'),
-            'B': os.path.join(LOG_DIR, '04_reviewing.xes.gz'),
-            'C': os.path.join(LOG_DIR, '08_receipt.xes.gz'),
+            'B': os.path.join(LOG_DIR, '02_teleclaims.xes.gz'),
+            'C': os.path.join(LOG_DIR, '04_reviewing.xes.gz'),
+            'D': os.path.join(LOG_DIR, '03_repairExample.xes.gz'),
         },
         'testing': {
-            'D_unseen': os.path.join(LOG_DIR, '01_running-example.xes.gz')
+            'D_unseen': os.path.join(LOG_DIR, '08_receipt.xes.gz')
         }
     },
 
