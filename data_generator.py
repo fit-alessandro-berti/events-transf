@@ -1,235 +1,163 @@
 # data_generator.py
-import random
 import pandas as pd
-from datetime import datetime, timedelta, time
+import random
+import pm4py
+import os
 
-class ProcessSimulator:
+
+class XESLogLoader:
     """
-    Generates event logs from simulated process models with increased complexity and realism.
-    - Interdependent attributes (e.g., duration depends on resource).
-    - Complex control-flow (parallelism, conditional loops).
-    - Realistic timestamp simulation (business hours, weekends).
-    - Data-driven decision points.
+    Loads, processes, and prepares event logs from a collection of XES files.
+
+    This class reads one or more XES files, builds a unified vocabulary for categorical
+    attributes, and transforms the data into the nested list format required by the
+    meta-learning framework. It is designed to be flexible and handles the absence
+    of optional attributes like resources or costs gracefully.
     """
 
-    def __init__(self, num_cases=500):
-        self.num_cases = num_cases
-        # Define richer vocabularies for categorical features
-        self.vocab = {
-            'activity': [
-                'Start', 'Submit Request', 'Check Request', 'Approve Request',
-                'Analyze Request', 'Request Additional Info', 'Verify Data',
-                'Process Payment', 'Notify Customer', 'Archive Case', 'End'
-            ],
-            'resource': ['Alice', 'Bob', 'Charlie', 'Dana', 'Eve', 'Frank'],
-            'department': ['Sales', 'Finance', 'Operations', 'Support']
-        }
-        self.activity_map = {name: i for i, name in enumerate(self.vocab['activity'])}
-        self.resource_map = {name: i for i, name in enumerate(self.vocab['resource'])}
-        self.department_map = {name: i for i, name in enumerate(self.vocab['department'])}
+    def __init__(self):
+        self.loaded_logs = {}
+        self.vocab = {'activity': [], 'resource': []}
+        self.activity_map = {}
+        self.resource_map = {}
 
-        # --- Define attribute correlations and realism parameters ---
+    def load_logs(self, log_paths: dict,
+                  case_id_key='case:concept:name',
+                  activity_key='concept:name',
+                  timestamp_key='time:timestamp',
+                  resource_key='org:resource',
+                  cost_key='amount'):
+        """
+        Loads multiple XES logs, builds a unified vocabulary, and processes them.
 
-        # Base costs per activity
-        self.activity_costs = {
-            'Submit Request': 5.0, 'Check Request': 10.0, 'Approve Request': 25.0,
-            'Analyze Request': 40.0, 'Request Additional Info': 15.0, 'Verify Data': 30.0,
-            'Process Payment': 50.0, 'Notify Customer': 8.0, 'Archive Case': 3.0,
-            'Start': 0.0, 'End': 0.0
-        }
-
-        # Base durations in minutes and resource proficiency multipliers
-        self.activity_durations = {
-            'Submit Request': (10, 20), 'Check Request': (30, 60), 'Approve Request': (60, 120),
-            'Analyze Request': (120, 240), 'Request Additional Info': (20, 40),
-            'Verify Data': (90, 180), 'Process Payment': (40, 80), 'Notify Customer': (10, 15),
-            'Archive Case': (5, 10), 'Start': (0, 0), 'End': (0, 0)
-        }
-        self.resource_skills = {
-            'Alice': {'Analyze Request': 0.7, 'Process Payment': 1.0}, # Expert analyst
-            'Bob': {'Check Request': 0.8, 'Verify Data': 1.2},
-            'Charlie': {'Approve Request': 0.9, 'Process Payment': 0.8}, # Finance expert
-            'Dana': {'Request Additional Info': 1.0, 'Notify Customer': 0.7}, # Communications expert
-            'Eve': {'Submit Request': 1.1, 'Check Request': 1.1}, # Trainee
-            'Frank': {'Verify Data': 0.8, 'Archive Case': 1.0}
-        }
-
-    def _get_next_timestamp(self, current_time, duration_minutes):
-        """Simulates realistic time progression, accounting for business hours and weekends."""
-        next_time = current_time + timedelta(minutes=duration_minutes)
-
-        # Simulate non-business hours (events happen between 8 AM and 6 PM)
-        if next_time.time() < time(8, 0) or next_time.time() > time(18, 0):
-            if next_time.hour >= 18:
-                next_time = next_time.replace(hour=8, minute=0, second=0) + timedelta(days=1)
-            else:
-                next_time = next_time.replace(hour=8, minute=random.randint(0, 30))
-
-        # Simulate weekend delays
-        if next_time.weekday() >= 5: # Saturday or Sunday
-            next_time += timedelta(days=(7 - next_time.weekday()))
-            next_time = next_time.replace(hour=8, minute=random.randint(0, 30))
-
-        return next_time
-
-    def _generate_trace(self, case_id, model_logic):
-        """Generates a single, complex trace by executing the model logic."""
-        trace = []
-        # Case-level attributes that can influence the process
-        case_state = {
-            'id': case_id,
-            'current_time': datetime(2025, 1, 1) + timedelta(days=random.randint(0, 60)),
-            'assigned_resource': random.choice(self.vocab['resource']),
-            'department': random.choice(self.vocab['department']),
-            'value': random.uniform(100, 5000) # e.g., order value
-        }
-
-        path_generator = model_logic(case_state)
-
-        for activity_name in path_generator:
-            # Handle parallel activities, which are yielded as a tuple
-            if isinstance(activity_name, tuple):
-                parallel_events = list(activity_name)
-                random.shuffle(parallel_events) # Execute in random order
-                for act in parallel_events:
-                    self._create_event(trace, case_state, act)
+        Args:
+            log_paths (dict): A dictionary mapping a friendly name (e.g., 'A') to a file path.
+            case_id_key (str): Column name for the case identifier.
+            activity_key (str): Column name for the activity name.
+            timestamp_key (str): Column name for the event timestamp.
+            resource_key (str): Column name for the resource (optional).
+            cost_key (str): Column name for a cost/amount attribute (optional).
+        """
+        print("Reading XES files and building unified vocabulary...")
+        all_dfs = []
+        for name, path in log_paths.items():
+            if not os.path.exists(path):
+                print(f"⚠️ Warning: File not found at {path}. Skipping.")
+                continue
+            try:
+                log = pm4py.read_xes(path)
+                df = pm4py.convert_to_dataframe(log)
+                df['log_name'] = name  # Keep track of origin
+                all_dfs.append(df)
+            except Exception as e:
+                print(f"❌ Error reading or converting file {path}: {e}")
                 continue
 
-            # Standard sequential activity
-            self._create_event(trace, case_state, activity_name)
+        if not all_dfs:
+            print("❌ Error: No valid XES logs were loaded. Aborting.")
+            return
 
-        # Post-process time features after the trace is complete
-        if not trace: return []
-        start_time = trace[0]['timestamp']
-        for i in range(len(trace)):
-            trace[i]['time_from_start'] = trace[i]['timestamp'] - start_time
-            if i > 0:
-                trace[i]['time_from_previous'] = trace[i]['timestamp'] - trace[i-1]['timestamp']
+        combined_df = pd.concat(all_dfs, ignore_index=True)
 
-        return trace
+        # --- Build Vocabulary ---
+        # Mandatory attribute: Activity
+        self.vocab['activity'] = sorted(list(combined_df[activity_key].unique()))
+        self.activity_map = {name: i for i, name in enumerate(self.vocab['activity'])}
 
-    def _create_event(self, trace, case_state, activity_name):
-        """Creates a single event dictionary and updates the case state."""
-        resource = case_state['assigned_resource']
-
-        # Calculate duration based on activity and resource skill
-        base_min, base_max = self.activity_durations.get(activity_name, (5, 15))
-        skill_multiplier = self.resource_skills.get(resource, {}).get(activity_name, 1.0)
-        duration = random.uniform(base_min, base_max) * skill_multiplier
-        # Add random noise/outliers
-        if random.random() < 0.02: # 2% chance of a major delay
-            duration *= random.uniform(3, 10)
-
-        case_state['current_time'] = self._get_next_timestamp(case_state['current_time'], duration)
-
-        # Calculate cost
-        cost = self.activity_costs.get(activity_name, 0.0) + random.uniform(-2, 2)
-
-        event = {
-            'case_id': case_state['id'],
-            'activity': self.activity_map[activity_name],
-            'timestamp': case_state['current_time'].timestamp(),
-            'resource': self.resource_map[resource],
-            'department': self.department_map[case_state['department']],
-            'cost': max(0.0, round(cost, 2)),
-            'time_from_start': 0, # Placeholder
-            'time_from_previous': 0, # Placeholder
-        }
-        trace.append(event)
-
-
-    # --- Process Model Definitions ---
-
-    def _model_a_logic(self, state):
-        """Simple linear process for standard requests."""
-        yield 'Start'
-        yield 'Submit Request'
-        yield 'Check Request'
-        yield 'Approve Request'
-        yield 'Process Payment'
-        yield 'Notify Customer'
-        yield 'Archive Case'
-        yield 'End'
-
-    def _model_b_logic(self, state):
-        """Process with a data-driven choice and potential rework loop."""
-        yield 'Start'
-        yield 'Submit Request'
-        yield 'Analyze Request'
-        # Data-driven choice: High-value cases require extra verification
-        if state['value'] > 2500:
-            yield 'Verify Data'
+        # Optional attribute: Resource
+        if resource_key in combined_df.columns:
+            print(f"Found resource attribute '{resource_key}'.")
+            combined_df[resource_key] = combined_df[resource_key].fillna('Unknown')
+            self.vocab['resource'] = sorted(list(combined_df[resource_key].unique()))
         else:
-            yield 'Check Request'
+            print(f"⚠️ Warning: Resource attribute '{resource_key}' not found. Using a single placeholder.")
+            self.vocab['resource'] = ['Unknown']
+        self.resource_map = {name: i for i, name in enumerate(self.vocab['resource'])}
 
-        # Conditional rework loop
-        rework_cycles = 0
-        while random.random() < 0.3 and rework_cycles < 2: # 30% chance of rework
-            yield 'Request Additional Info'
-            yield 'Check Request'
-            rework_cycles += 1
-
-        yield 'Approve Request'
-        yield 'Process Payment'
-        yield 'Notify Customer'
-        yield 'Archive Case'
-        yield 'End'
-
-    def _model_c_logic(self, state):
-        """Process with parallel activities (AND-split/join)."""
-        yield 'Start'
-        yield 'Submit Request'
-        yield 'Check Request'
-        # Parallel execution of payment and verification
-        yield ('Process Payment', 'Verify Data')
-        yield 'Approve Request'
-        yield 'Notify Customer'
-        yield 'Archive Case'
-        yield 'End'
-
-    def _model_d_logic_unseen(self, state):
-        """A different process for testing, combining choices and loops."""
-        yield 'Start'
-        yield 'Analyze Request'
-        # Exclusive choice
-        if state['department'] == 'Finance':
-            yield 'Process Payment'
-            yield 'Verify Data'
+        # Check for optional cost attribute
+        if cost_key in combined_df.columns:
+            print(f"Found cost attribute '{cost_key}'.")
         else:
-            yield 'Request Additional Info'
+            print(f"⚠️ Warning: Cost attribute '{cost_key}' not found. Random costs will be generated.")
 
-        if random.random() < 0.5:
-            yield 'Approve Request'
+        # --- Process each log individually using the unified vocabulary ---
+        print("Transforming logs into framework-compatible format...")
+        for name, group_df in combined_df.groupby('log_name'):
+            self.loaded_logs[name] = self._convert_df_to_traces(
+                group_df, case_id_key, activity_key, timestamp_key, resource_key, cost_key
+            )
+        print("✅ Log loading complete.")
 
-        yield 'Notify Customer'
-        yield 'End'
+    def _convert_df_to_traces(self, df, case_id_key, activity_key, timestamp_key, resource_key, cost_key):
+        """Converts a DataFrame into a list of traces with computed features."""
+        processed_log = []
 
-    def generate_data_for_model(self, model_type='A'):
-        """Generates a full event log for a specific process model."""
-        log = []
-        logic_map = {
-            'A': self._model_a_logic,
-            'B': self._model_b_logic,
-            'C': self._model_c_logic,
-            'D_unseen': self._model_d_logic_unseen
-        }
-        if model_type not in logic_map:
-            raise ValueError(f"Unknown model type: {model_type}")
+        # Ensure timestamps are timezone-naive for consistent calculations
+        df[timestamp_key] = pd.to_datetime(df[timestamp_key]).dt.tz_localize(None)
 
-        model_func = logic_map[model_type]
-        for i in range(self.num_cases):
-            trace = self._generate_trace(f"{model_type}_{i}", model_func)
+        df_grouped = df.groupby(case_id_key)
+
+        for case_id, trace_df in df_grouped:
+            trace_df = trace_df.sort_values(by=timestamp_key)
+            if trace_df.empty:
+                continue
+
+            trace = []
+            start_time = trace_df.iloc[0][timestamp_key]
+            prev_time = start_time
+
+            for _, event in trace_df.iterrows():
+                current_time = event[timestamp_key]
+
+                # --- Handle optional attributes gracefully ---
+                # Get resource, defaulting to 'Unknown' if column or value is missing
+                resource_name = event.get(resource_key, 'Unknown')
+                resource_id = self.resource_map.get(resource_name, self.resource_map['Unknown'])
+
+                # Get cost, generating a random one if column or value is missing/invalid
+                cost_val = event.get(cost_key, round(random.uniform(5.0, 100.0), 2))
+                if not isinstance(cost_val, (int, float)):
+                    cost_val = round(random.uniform(5.0, 100.0), 2)
+
+                # Create the event dictionary required by the model
+                event_dict = {
+                    'case_id': case_id,
+                    'activity': self.activity_map.get(event[activity_key]),
+                    'timestamp': current_time.timestamp(),
+                    'resource': resource_id,
+                    'cost': cost_val,
+                    'time_from_start': (current_time - start_time).total_seconds(),
+                    'time_from_previous': (current_time - prev_time).total_seconds(),
+                }
+                trace.append(event_dict)
+                prev_time = current_time
+
             if trace:
-                log.append(trace)
-        return log
+                processed_log.append(trace)
+
+        return processed_log
+
+    def get_log(self, name: str):
+        """Retrieves a processed log by its friendly name."""
+        return self.loaded_logs.get(name)
+
+    def get_vocabs(self):
+        """Returns the vocabulary sizes for model initialization."""
+        return {
+            'activity': len(self.vocab['activity']),
+            'resource': len(self.vocab['resource']),
+        }
 
 
 def get_task_data(log, task_type, max_seq_len=10):
     """
     Creates subsequences and corresponding labels for a given task.
-    (This function remains unchanged but is included for completeness)
+    (This function is generic and works with loaded XES data)
     """
     tasks = []
+    if not log:
+        return tasks
+
     for trace in log:
         if len(trace) < 3: continue  # Need at least a prefix and a next event
 
@@ -251,33 +179,58 @@ def get_task_data(log, task_type, max_seq_len=10):
 
     return tasks
 
+
 # --- Direct Execution Block ---
 if __name__ == '__main__':
-    print("Generating a sample of complex process data...")
-    simulator = ProcessSimulator(num_cases=10)
+    print("--- Demonstrating Flexible XES Log Loader ---")
+    # NOTE: You must provide your own XES files for this demonstration.
+    # Create a directory named 'logs' in your project root and place your XES files there.
+    # Example file structure:
+    # ./logs/log_A.xes          (contains 'org:resource')
+    # ./logs/log_B.xes          (contains 'org:resource' and 'amount')
+    # ./logs/log_unseen.xes     (missing 'org:resource' and 'amount')
 
-    # Invert maps for readable output
-    rev_activity_map = {v: k for k, v in simulator.activity_map.items()}
-    rev_resource_map = {v: k for k, v in simulator.resource_map.items()}
-    rev_department_map = {v: k for k, v in simulator.department_map.items()}
+    log_dir = './logs'
+    all_paths = {
+        'running-example': os.path.join(log_dir, '01_running-example.xes.gz'),
+        'reviewing': os.path.join(log_dir, '04_reviewing.xes.gz'),
+    }
 
-    # Generate data from a complex model with choices and loops
-    log_data = simulator.generate_data_for_model('B')
+    # Check if the 'logs' directory exists
+    if not os.path.isdir(log_dir) or not any(os.path.exists(p) for p in all_paths.values()):
+        print("\n❌ CRITICAL: No XES files found in the './logs' directory.")
+        print(
+            "Please create a 'logs' directory in your project root and add at least one .xes file to run this script.")
+    else:
+        # --- Run the XESLogLoader Demo ---
+        loader = XESLogLoader()
+        # The loader will now check for 'org:resource' and 'amount' keys automatically.
+        loader.load_logs(all_paths)
 
-    # Flatten the log and convert to a DataFrame for pretty printing
-    flat_log = [event for trace in log_data for event in trace]
-    df = pd.DataFrame(flat_log)
+        # --- Display sample from a loaded log ---
+        log_a_data = loader.get_log('A')
+        if not log_a_data:
+            print("\nLog 'A' could not be loaded. Please check the file path and format.")
+        else:
+            print(f"\nSuccessfully loaded log 'A' with {len(log_a_data)} traces.")
 
-    # Convert numeric IDs back to human-readable names
-    df['activity'] = df['activity'].map(rev_activity_map)
-    df['resource'] = df['resource'].map(rev_resource_map)
-    df['department'] = df['department'].map(rev_department_map)
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+            # Prepare for display
+            flat_log = [event for trace in log_a_data for event in trace]
+            df = pd.DataFrame(flat_log)
 
-    print(f"\n--- Generated Log Summary ---")
-    print(f"Total Cases: {df['case_id'].nunique()}")
-    print(f"Total Events: {len(df)}")
-    print(f"Average Trace Length: {df.groupby('case_id').size().mean():.2f} events")
+            rev_activity_map = {v: k for k, v in loader.activity_map.items()}
+            rev_resource_map = {v: k for k, v in loader.resource_map.items()}
 
-    print("\n--- Sample Event Log (first 20 events) ---")
-    print(df.head(20).to_string())
+            df['activity'] = df['activity'].map(rev_activity_map)
+            df['resource'] = df['resource'].map(rev_resource_map)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+            df['time_from_start'] = pd.to_timedelta(df['time_from_start'], unit='s')
+            df['time_from_previous'] = pd.to_timedelta(df['time_from_previous'], unit='s')
+
+            print("\n--- Sample of Processed Log 'A' (first 20 events) ---")
+            print(df.head(20).to_string())
+
+            print("\n--- Vocabulary Information ---")
+            vocabs = loader.get_vocabs()
+            print(f"Activity vocabulary size: {vocabs['activity']}")
+            print(f"Resource vocabulary size: {vocabs['resource']}")
