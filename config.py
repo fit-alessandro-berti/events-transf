@@ -19,10 +19,6 @@ CONFIG = {
         }
     },
 
-    # --- Vocabulary Configuration ---
-    'fixed_activity_vocab_size': 50,    # Max unique activities per trace
-    'fixed_resource_vocab_size': 20,    # Max unique resources per trace
-
     # --- Lightweight Model Hyperparameters (for quick training) ---
     'd_model': 64,                  # Reduced from 128
     'n_heads': 4,                   # Reduced from 8

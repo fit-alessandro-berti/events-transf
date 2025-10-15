@@ -12,17 +12,19 @@ from config import CONFIG
 
 class XESLogLoader:
     """
-    Loads and processes event logs from XES files.
+    Loads, processes, and prepares event logs from a collection of XES files.
 
-    Instead of a global vocabulary, this class uses a fixed vocabulary size and
-    assigns a NEW, RANDOM mapping of activities/resources to integer IDs for
-    EVERY trace. This forces the model to rely on in-context learning to understand
-    the process structure from the support set, rather than memorizing token meanings.
+    This class reads one or more XES files, builds a unified vocabulary for categorical
+    attributes, and transforms the data into the nested list format required by the
+    meta-learning framework. It is designed to be flexible and handles the absence
+    of optional attributes like resources or costs gracefully.
     """
 
     def __init__(self):
         self.loaded_logs = {}
-        # No global vocabulary anymore. The size is fixed in the config.
+        self.vocab = {'activity': [], 'resource': []}
+        self.activity_map = {}
+        self.resource_map = {}
 
     def load_logs(self, log_paths: dict,
                   case_id_key='case:concept:name',
@@ -31,9 +33,17 @@ class XESLogLoader:
                   resource_key='org:resource',
                   cost_key='amount'):
         """
-        Loads multiple XES logs and processes them without a unified vocabulary.
+        Loads multiple XES logs, builds a unified vocabulary, and processes them.
+
+        Args:
+            log_paths (dict): A dictionary mapping a friendly name (e.g., 'A') to a file path.
+            case_id_key (str): Column name for the case identifier.
+            activity_key (str): Column name for the activity name.
+            timestamp_key (str): Column name for the event timestamp.
+            resource_key (str): Column name for the resource (optional).
+            cost_key (str): Column name for a cost/amount attribute (optional).
         """
-        print("Reading XES files...")
+        print("Reading XES files and building unified vocabulary...")
         all_dfs = []
         for name, path in log_paths.items():
             if not os.path.exists(path):
@@ -54,10 +64,34 @@ class XESLogLoader:
 
         combined_df = pd.concat(all_dfs, ignore_index=True)
 
-        # --- No Vocabulary Building ---
-        # The vocabulary is now defined by a fixed size in CONFIG.
-        # Mappings are created randomly on-the-fly for each trace.
-        print("Transforming logs with trace-level random token allocation...")
+        # --- Build Vocabulary ---
+        # Mandatory attribute: Activity
+        self.vocab['activity'] = sorted(list(combined_df[activity_key].unique()))
+        self.activity_map = {name: i for i, name in enumerate(self.vocab['activity'])}
+
+        # Robust handling of the Resource attribute
+        resource_vocab_set = set()
+        if resource_key in combined_df.columns:
+            print(f"Found resource attribute '{resource_key}'.")
+            combined_df[resource_key] = combined_df[resource_key].fillna('Unknown')
+            resource_vocab_set.update(combined_df[resource_key].unique())
+        else:
+            print(f"⚠️ Warning: Resource attribute '{resource_key}' not found. Using a single placeholder.")
+
+        # ALWAYS ensure 'Unknown' is in the vocabulary to serve as a reliable fallback.
+        resource_vocab_set.add('Unknown')
+
+        self.vocab['resource'] = sorted(list(resource_vocab_set))
+        self.resource_map = {name: i for i, name in enumerate(self.vocab['resource'])}
+
+        # Check for optional cost attribute
+        if cost_key in combined_df.columns:
+            print(f"Found cost attribute '{cost_key}'.")
+        else:
+            print(f"⚠️ Warning: Cost attribute '{cost_key}' not found. Random costs will be generated.")
+
+        # --- Process each log individually using the unified vocabulary ---
+        print("Transforming logs into framework-compatible format...")
         for name, group_df in combined_df.groupby('log_name'):
             self.loaded_logs[name] = self._convert_df_to_traces(
                 group_df, case_id_key, activity_key, timestamp_key, resource_key, cost_key
@@ -65,24 +99,10 @@ class XESLogLoader:
         print("✅ Log loading complete.")
 
     def _convert_df_to_traces(self, df, case_id_key, activity_key, timestamp_key, resource_key, cost_key):
-        """
-        Converts a DataFrame into a list of traces.
-        For each trace, it creates a new random mapping from activity/resource names
-        to a fixed set of integer IDs.
-        """
+        """Converts a DataFrame into a list of traces with computed features."""
         processed_log = []
+
         df[timestamp_key] = pd.to_datetime(df[timestamp_key]).dt.tz_localize(None)
-
-        # Ensure resource and cost columns exist to avoid KeyErrors
-        if resource_key not in df.columns:
-            df[resource_key] = 'Unknown'
-        else:
-            df[resource_key] = df[resource_key].fillna('Unknown')
-
-        if cost_key not in df.columns:
-            # Create a placeholder cost column if it doesn't exist
-            df[cost_key] = np.nan
-
         df_grouped = df.groupby(case_id_key)
 
         for case_id, trace_df in df_grouped:
@@ -90,26 +110,6 @@ class XESLogLoader:
             if trace_df.empty:
                 continue
 
-            # --- Per-Trace Random Mapping ---
-            # 1. Get unique activities and resources in this specific trace
-            unique_activities = trace_df[activity_key].unique()
-            unique_resources = trace_df[resource_key].unique()
-
-            # 2. Check if the number of unique items exceeds our fixed vocabulary
-            if len(unique_activities) > CONFIG['fixed_activity_vocab_size']:
-                unique_activities = unique_activities[:CONFIG['fixed_activity_vocab_size']]
-
-            if len(unique_resources) > CONFIG['fixed_resource_vocab_size']:
-                unique_resources = unique_resources[:CONFIG['fixed_resource_vocab_size']]
-
-            # 3. Create a random mapping for this trace
-            act_ids = random.sample(range(CONFIG['fixed_activity_vocab_size']), len(unique_activities))
-            res_ids = random.sample(range(CONFIG['fixed_resource_vocab_size']), len(unique_resources))
-
-            activity_map = {name: i for name, i in zip(unique_activities, act_ids)}
-            resource_map = {name: i for name, i in zip(unique_resources, res_ids)}
-
-            # --- Process Events in Trace ---
             trace = []
             start_time = trace_df.iloc[0][timestamp_key]
             prev_time = start_time
@@ -117,17 +117,16 @@ class XESLogLoader:
             for _, event in trace_df.iterrows():
                 current_time = event[timestamp_key]
 
-                # Use the trace-specific random map. Fallback to 0 if an item was truncated.
-                activity_id = activity_map.get(event[activity_key], 0)
-                resource_id = resource_map.get(event[resource_key], 0)
+                resource_name = event.get(resource_key, 'Unknown')
+                resource_id = self.resource_map.get(resource_name, self.resource_map['Unknown'])
 
                 cost_val = event.get(cost_key, round(random.uniform(5.0, 100.0), 2))
-                if pd.isna(cost_val) or not isinstance(cost_val, (int, float)):
+                if not isinstance(cost_val, (int, float)):
                     cost_val = round(random.uniform(5.0, 100.0), 2)
 
                 event_dict = {
                     'case_id': case_id,
-                    'activity': activity_id,
+                    'activity': self.activity_map.get(event[activity_key]),
                     'timestamp': current_time.timestamp(),
                     'resource': resource_id,
                     'cost': cost_val,
@@ -147,10 +146,10 @@ class XESLogLoader:
         return self.loaded_logs.get(name)
 
     def get_vocabs(self):
-        """Returns the FIXED vocabulary sizes for model initialization."""
+        """Returns the vocabulary sizes for model initialization."""
         return {
-            'activity': CONFIG['fixed_activity_vocab_size'],
-            'resource': CONFIG['fixed_resource_vocab_size'],
+            'activity': len(self.vocab['activity']),
+            'resource': len(self.vocab['resource']),
         }
 
 
@@ -188,7 +187,7 @@ def get_task_data(log, task_type, max_seq_len=10):
 
 # --- Direct Execution Block (for demonstration) ---
 if __name__ == '__main__':
-    print("--- Demonstrating XES Log Loader with Random Per-Trace Tokenization ---")
+    print("--- Demonstrating Flexible XES Log Loader ---")
 
     # --- MODIFIED: Load paths from the central CONFIG file ---
     all_paths = {**CONFIG['log_paths']['training'], **CONFIG['log_paths']['testing']}
@@ -214,17 +213,19 @@ if __name__ == '__main__':
             flat_log = [event for trace in log_a_data for event in trace]
             df = pd.DataFrame(flat_log)
 
-            # Note: We can no longer display original activity/resource names because
-            # the integer mapping is now random and local to each trace.
+            rev_activity_map = {v: k for k, v in loader.activity_map.items()}
+            rev_resource_map = {v: k for k, v in loader.resource_map.items()}
+
+            df['activity'] = df['activity'].map(rev_activity_map)
+            df['resource'] = df['resource'].map(rev_resource_map)
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
             df['time_from_start'] = pd.to_timedelta(df['time_from_start'], unit='s')
             df['time_from_previous'] = pd.to_timedelta(df['time_from_previous'], unit='s')
 
             print("\n--- Sample of Processed Log 'A' (first 20 events) ---")
-            print("Note: 'activity' and 'resource' are now random integer IDs, newly assigned for each trace.")
             print(df.head(20).to_string())
 
             print("\n--- Vocabulary Information ---")
             vocabs = loader.get_vocabs()
-            print(f"Activity vocabulary size (fixed): {vocabs['activity']}")
-            print(f"Resource vocabulary size (fixed): {vocabs['resource']}")
+            print(f"Activity vocabulary size: {vocabs['activity']}")
+            print(f"Resource vocabulary size: {vocabs['resource']}")
