@@ -15,7 +15,7 @@ CONFIG = {
             'D': os.path.join(LOG_DIR, '03_repairExample.xes.gz'),
         },
         'testing': {
-            'D_unseen': os.path.join(LOG_DIR, '08_receipt.xes.gz')
+            'D_unseen': os.path.join(LOG_DIR, '03_repairExample.xes.gz')
         }
     },
 
@@ -33,7 +33,7 @@ CONFIG = {
 
     # --- Training Parameters (Significantly reduced for speed) ---
     'lr': 3e-4,                     # Slightly higher learning rate can help with shorter training
-    'epochs': 5,                    # Reduced from 25
+    'epochs': 4,                    # Reduced from 25
     'episodes_per_epoch': 200,      # Reduced from 1000
 
     # --- Test Parameters (Reduced for faster evaluation) ---
