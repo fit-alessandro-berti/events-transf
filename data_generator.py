@@ -6,6 +6,8 @@ import os
 import numpy as np
 import torch
 from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+from scipy.optimize import linear_sum_assignment
 
 # --- Import from project files ---
 from config import CONFIG
@@ -14,28 +16,22 @@ from time_transf import transform_time
 
 class XESLogLoader:
     """
-    Handles data loading and processing for training and testing.
-
-    Workflow:
-    1. `fit(training_log_paths)`: Call this first with training logs. It reads the logs
-       to determine the universe of possible activities and creates a stable integer
-       mapping (`activity_to_id`) for classification labels. This is a training artifact.
-    2. `transform(log_paths)`: This can be called for any set of logs (training or test).
-       It loads the logs, dynamically generates semantic embeddings for the activities
-       and resources found within them, and uses the pre-fitted `activity_to_id` map
-       to assign classification labels.
+    Handles data loading and processing. It learns an activity map from training
+    data and can map unseen test activities to their closest semantic match
+    using the Hungarian algorithm for optimal 1-to-1 assignment.
     """
 
     def __init__(self, model_name='all-MiniLM-L6-v2'):
-        self.activity_to_id = {}  # Will be populated by the `fit` method
+        # Training-derived artifacts
+        self.activity_to_id = {}
+        self.training_activity_names = []
+        self.training_activity_embeddings = None
 
         try:
             self.model = SentenceTransformer(model_name)
             self.embedding_dim = self.model.get_sentence_embedding_dimension()
         except Exception as e:
             print(f"❌ Error initializing SentenceTransformer model '{model_name}': {e}")
-            print(
-                "Please ensure 'sentence-transformers' is installed (`pip install sentence-transformers`) and you have an internet connection.")
             self.model = None
             self.embedding_dim = 384
 
@@ -43,133 +39,124 @@ class XESLogLoader:
 
     def fit(self, training_log_paths: dict, activity_key='concept:name'):
         """
-        Fits the loader on the training data to define the classification label space.
+        Fits on training data to create the activity->ID map and store
+        the embeddings for all known training activities.
         """
-        if not self.model:
-            raise RuntimeError("SentenceTransformer model not available.")
+        if not self.model: raise RuntimeError("SentenceTransformer model not available.")
 
-        print("Fitting on training data to create activity-to-ID map...")
+        print("Fitting on training data to create activity map and embeddings...")
         all_activities = set()
-        for name, path in training_log_paths.items():
-            if not os.path.exists(path):
-                print(f"⚠️ Warning: Training log not found at {path}. Skipping.")
-                continue
+        for _, path in training_log_paths.items():
+            if not os.path.exists(path): continue
             try:
                 log = pm4py.read_xes(path)
                 df = pm4py.convert_to_dataframe(log)
                 all_activities.update(df[activity_key].unique())
             except Exception as e:
                 print(f"❌ Error reading file {path} during fitting: {e}")
-                continue
 
-        if not all_activities:
-            raise ValueError("No activities found in training logs. Cannot create mapping.")
+        if not all_activities: raise ValueError("No activities found in training logs.")
 
-        sorted_activities = sorted(list(all_activities))
-        self.activity_to_id = {name: i for i, name in enumerate(sorted_activities)}
-        print(f"✅ Activity map created with {len(self.activity_to_id)} unique activities from training data.")
+        self.training_activity_names = sorted(list(all_activities))
+        self.activity_to_id = {name: i for i, name in enumerate(self.training_activity_names)}
+
+        print(f"  - Created map for {len(self.activity_to_id)} unique activities.")
+        print("  - Generating and storing embeddings for all training activities...")
+        self.training_activity_embeddings = self.model.encode(
+            self.training_activity_names, show_progress_bar=True, normalize_embeddings=True
+        )
+        print("✅ Fit complete.")
         return self
 
     def transform(self, log_paths: dict, case_id_key='case:concept:name', activity_key='concept:name',
                   timestamp_key='time:timestamp', resource_key='org:resource', cost_key='amount'):
         """
-        Loads, embeds, and processes logs using the fitted activity map.
+        Loads and processes logs. Unseen activities are mapped to the most
+        semantically similar training activity via an optimal 1-to-1 assignment.
         """
-        if not self.model:
-            raise RuntimeError("SentenceTransformer model not available.")
-        if not self.activity_to_id:
-            raise RuntimeError("Loader has not been fitted. Call `fit()` with training logs first.")
+        if not self.model: raise RuntimeError("SentenceTransformer model not available.")
+        if not self.activity_to_id: raise RuntimeError("Loader has not been fitted.")
 
         print(f"\nTransforming logs: {list(log_paths.keys())}")
 
-        # 1. Load all specified logs into a single DataFrame
-        all_dfs = []
-        for name, path in log_paths.items():
-            if not os.path.exists(path):
-                print(f"⚠️ Warning: File not found at {path}. Skipping.")
-                continue
-            try:
-                log = pm4py.read_xes(path)
-                df = pm4py.convert_to_dataframe(log)
-                df['log_name'] = name
-                all_dfs.append(df)
-            except Exception as e:
-                print(f"❌ Error reading file {path}: {e}")
-                continue
+        all_dfs = [pm4py.convert_to_dataframe(pm4py.read_xes(path)) for path in log_paths.values() if
+                   os.path.exists(path)]
+        if not all_dfs: return {}
+        combined_df = pd.concat(all_dfs, keys=log_paths.keys(), names=['log_name', 'orig_index']).reset_index()
 
-        if not all_dfs:
-            print("❌ No valid logs were loaded during transform. Returning empty dict.")
-            return {}
+        current_activities = sorted(list(combined_df[activity_key].unique()))
 
-        combined_df = pd.concat(all_dfs, ignore_index=True)
+        # --- Create the complete activity->ID map for this batch ---
+        final_activity_id_map = self.activity_to_id.copy()
+        unseen_activities = [name for name in current_activities if name not in self.activity_to_id]
 
-        # 2. Get unique activities/resources from THIS specific data batch for embedding
-        activities_to_embed = sorted(list(combined_df[activity_key].unique()))
+        if unseen_activities:
+            print(f"  - Found {len(unseen_activities)} unseen activities. Mapping them to training vocabulary...")
+            unseen_embeddings = self.model.encode(unseen_activities, normalize_embeddings=True)
 
-        resources_to_embed = set()
-        if resource_key in combined_df.columns:
-            combined_df[resource_key] = combined_df[resource_key].fillna('Unknown')
-            resources_to_embed.update(combined_df[resource_key].unique())
-        resources_to_embed.add('Unknown')
-        resources_to_embed = sorted(list(resources_to_embed))
+            # Calculate cosine similarity and create a cost matrix for the assignment problem
+            similarity_matrix = cosine_similarity(unseen_embeddings, self.training_activity_embeddings)
+            cost_matrix = 1 - similarity_matrix  # Hungarian algorithm minimizes cost, so we use 1 - similarity
 
-        print(
-            f"  - Found {len(activities_to_embed)} unique activities and {len(resources_to_embed)} unique resources to embed.")
+            # Solve the assignment problem
+            row_ind, col_ind = linear_sum_assignment(cost_matrix)
 
-        # 3. Generate embeddings on the fly
-        act_embeddings = self.model.encode(activities_to_embed, show_progress_bar=True, normalize_embeddings=True)
-        res_embeddings = self.model.encode(resources_to_embed, show_progress_bar=True, normalize_embeddings=True)
+            print(f"  - Optimal 1-to-1 mapping found for {len(row_ind)} activities.")
+            for r, c in zip(row_ind, col_ind):
+                unseen_name = unseen_activities[r]
+                mapped_name = self.training_activity_names[c]
+                mapped_id = self.activity_to_id[mapped_name]
+                final_activity_id_map[unseen_name] = mapped_id
+                # print(f"    '{unseen_name}' -> '{mapped_name}' (ID: {mapped_id})") # Uncomment for debugging
 
-        activity_embedding_map = {text: emb for text, emb in zip(activities_to_embed, act_embeddings)}
-        resource_embedding_map = {text: emb for text, emb in zip(resources_to_embed, res_embeddings)}
+        # --- Embed all activities and resources for this batch ---
+        resources_to_embed = sorted(list(combined_df[resource_key].fillna('Unknown').unique()))
 
-        # 4. Process traces for each log
+        activity_embedding_map = {name: emb for name, emb in zip(current_activities,
+                                                                 self.model.encode(current_activities,
+                                                                                   normalize_embeddings=True))}
+        resource_embedding_map = {name: emb for name, emb in zip(resources_to_embed,
+                                                                 self.model.encode(resources_to_embed,
+                                                                                   normalize_embeddings=True))}
+
+        # --- Process traces using the final maps ---
         processed_logs = {}
         for name, group_df in combined_df.groupby('log_name'):
-            print(f"  - Processing traces for '{name}'...")
             raw_traces = self._convert_df_to_raw_traces(group_df, case_id_key, activity_key, timestamp_key,
                                                         resource_key, cost_key)
             processed_logs[name] = self._apply_embeddings_to_traces(raw_traces, activity_embedding_map,
-                                                                    resource_embedding_map)
+                                                                    resource_embedding_map, final_activity_id_map)
 
         print("✅ Transformation complete.")
         return processed_logs
 
-    def _apply_embeddings_to_traces(self, raw_traces, activity_embedding_map, resource_embedding_map):
+    def _apply_embeddings_to_traces(self, raw_traces, activity_embedding_map, resource_embedding_map,
+                                    final_activity_id_map):
         unknown_resource_emb = resource_embedding_map.get('Unknown', self.pad_embedding)
-        unknown_activity_id = -100  # Label for activities not in the training-defined map
 
         log_with_embeddings = []
         for raw_trace in raw_traces:
             processed_trace = []
             for event in raw_trace:
-                # Get embeddings from the dynamically generated maps
-                activity_emb = activity_embedding_map.get(event['activity'], self.pad_embedding)
-                resource_emb = resource_embedding_map.get(event['resource'], unknown_resource_emb)
-
-                # Get classification label from the pre-fitted map
-                activity_id = self.activity_to_id.get(event['activity'], unknown_activity_id)
+                activity_id = final_activity_id_map.get(event['activity'], -100)
 
                 processed_event = {
-                    'activity_embedding': activity_emb,
-                    'resource_embedding': resource_emb,
+                    'activity_embedding': activity_embedding_map.get(event['activity'], self.pad_embedding),
+                    'resource_embedding': resource_embedding_map.get(event['resource'], unknown_resource_emb),
                     'activity_id': activity_id,
                     'cost': event['cost'],
                     'time_from_start': event['time_from_start'],
                     'time_from_previous': event['time_from_previous'],
-                    'timestamp': event['timestamp'],
-                    'case_id': event['case_id']
+                    'timestamp': event['timestamp'], 'case_id': event['case_id']
                 }
                 processed_trace.append(processed_event)
             log_with_embeddings.append(processed_trace)
         return log_with_embeddings
 
     def _convert_df_to_raw_traces(self, df, case_id_key, activity_key, timestamp_key, resource_key, cost_key):
+        # This function remains the same as before
         raw_log = []
         df[timestamp_key] = pd.to_datetime(df[timestamp_key]).dt.tz_localize(None)
-        if cost_key not in df.columns:
-            # This check is now less critical as it's per-batch, but still good practice
-            pass  # Suppressing warning to avoid repetition
 
         for case_id, trace_df in df.groupby(case_id_key):
             trace_df = trace_df.sort_values(by=timestamp_key)
@@ -194,39 +181,44 @@ class XESLogLoader:
                 raw_log.append(trace)
         return raw_log
 
-    def save_activity_map(self, path):
-        """Saves the essential activity-to-ID map to a file."""
-        map_data = {'activity_to_id': self.activity_to_id}
-        torch.save(map_data, path)
-        print(f"💾 Activity-to-ID map saved to {path}")
+    def save_training_artifacts(self, path):
+        """Saves the essential training artifacts needed for testing."""
+        artifacts = {
+            'activity_to_id': self.activity_to_id,
+            'training_activity_names': self.training_activity_names,
+            'training_activity_embeddings': self.training_activity_embeddings
+        }
+        torch.save(artifacts, path)
+        print(f"💾 Training artifacts saved to {path}")
 
-    def load_activity_map(self, path):
-        """Loads the activity-to-ID map, required for stand-alone testing."""
+    def load_training_artifacts(self, path):
+        """Loads artifacts, required for stand-alone testing."""
         if not os.path.exists(path):
-            raise FileNotFoundError(
-                f"Activity map file not found at {path}. Please train a model first to generate it.")
+            raise FileNotFoundError(f"Artifacts file not found at {path}.")
 
-        map_data = torch.load(path)
-        self.activity_to_id = map_data['activity_to_id']
-        print(f"✅ Activity-to-ID map loaded successfully from {path}")
+        artifacts = torch.load(path)
+        self.activity_to_id = artifacts['activity_to_id']
+        self.training_activity_names = artifacts['training_activity_names']
+        self.training_activity_embeddings = artifacts['training_activity_embeddings']
+        print(f"✅ Training artifacts loaded successfully from {path}")
 
 
 def get_task_data(log, task_type, max_seq_len=10):
+    # This function is now slightly simpler as the label is always valid
     tasks = []
-    if not log:
-        return tasks
+    if not log: return tasks
 
     for trace in log:
-        if len(trace) < 3:
-            continue
+        if len(trace) < 3: continue
         for i in range(1, len(trace) - 1):
             prefix = trace[:i + 1]
             if len(prefix) > max_seq_len:
                 prefix = prefix[-max_seq_len:]
 
             if task_type == 'classification':
+                # The label should now always be valid due to the mapping
                 label = trace[i + 1]['activity_id']
-                if label != -100:
+                if label != -100:  # Keep safeguard just in case
                     tasks.append((prefix, label))
             elif task_type == 'regression':
                 last_event_time = trace[-1]['timestamp']
