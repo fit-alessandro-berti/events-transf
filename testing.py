@@ -17,7 +17,6 @@ from time_transf import inverse_transform_time
 def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
     """
     Evaluates a given model's in-context learning performance on unseen tasks.
-    This function can be called from main.py or from the stand-alone script.
     """
     print("\n🔬 Starting meta-testing on unseen process...")
     model.eval()
@@ -54,17 +53,13 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
                     eligible_classes = [c for c, items in class_dict.items() if len(items) >= k + 1]
                     if len(eligible_classes) < N_WAYS_TEST:
                         continue
-
                     episode_classes = random.sample(eligible_classes, N_WAYS_TEST)
-
                     for cls in episode_classes:
                         samples = random.sample(class_dict[cls], k + 1)
                         support_set.extend(samples[:k])
                         query_set.append(samples[k])
-
                     random.shuffle(support_set)
                     random.shuffle(query_set)
-
                 else:  # Regression
                     if len(task_data) < k + 1: continue
                     random.shuffle(task_data)
@@ -72,7 +67,6 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
                     query_set = task_data[k:k + 1]
 
                 if not support_set or not query_set: continue
-
                 episodes_generated += 1
                 with torch.no_grad():
                     predictions, true_labels = model(support_set, query_set, task_type)
@@ -102,20 +96,16 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
                 accuracy = accuracy_score(valid_labels, valid_preds)
                 print(f"[{k}-shot] Accuracy: {accuracy:.4f}")
                 results[task_type][k] = {'accuracy': accuracy}
-            else: # Regression
-                valid_preds_transformed = [p for p, l in zip(all_preds, all_labels) if not np.isnan(p) and not np.isnan(l)]
-                valid_labels_transformed = [l for p, l in zip(all_preds, all_labels) if not np.isnan(p) and not np.isnan(l)]
-                if not valid_labels_transformed:
-                    print(f"[{k}-shot] MAE: NaN (No valid predictions)")
-                    continue
-                valid_preds = inverse_transform_time(np.array(valid_preds_transformed))
-                valid_labels = inverse_transform_time(np.array(valid_labels_transformed))
+            else:  # Regression
+                valid_preds = inverse_transform_time(np.array(all_preds))
+                valid_labels = inverse_transform_time(np.array(all_labels))
                 valid_preds[valid_preds < 0] = 0
                 mae = mean_absolute_error(valid_labels, valid_preds)
                 r2 = r2_score(valid_labels, valid_preds)
                 print(f"[{k}-shot] MAE: {mae:.4f} | R-squared: {r2:.4f}")
                 results[task_type][k] = {'mae': mae, 'r2': r2}
     return results
+
 
 if __name__ == '__main__':
     print("--- Running Testing Script in Stand-Alone Mode ---")
@@ -124,41 +114,45 @@ if __name__ == '__main__':
     if not os.path.isdir(checkpoint_dir):
         print(f"❌ Error: Checkpoint directory '{checkpoint_dir}' not found. Please train a model first.")
         exit()
+
+    # 1. Find the latest model checkpoint
     checkpoints = [f for f in os.listdir(checkpoint_dir) if f.startswith('model_epoch_') and f.endswith('.pth')]
     if not checkpoints:
-        print(f"❌ Error: No checkpoints found in '{checkpoint_dir}'.")
+        print(f"❌ Error: No model checkpoints found in '{checkpoint_dir}'.")
         exit()
-    epoch_map = {int(re.search(r'model_epoch_(\d+).pth', f).group(1)): f for f in checkpoints if re.search(r'model_epoch_(\d+).pth', f)}
+    epoch_map = {int(re.search(r'model_epoch_(\d+).pth', f).group(1)): f for f in checkpoints if
+                 re.search(r'model_epoch_(\d+).pth', f)}
     latest_epoch = max(epoch_map.keys())
-    latest_checkpoint_file = epoch_map[latest_epoch]
-    latest_checkpoint_path = os.path.join(checkpoint_dir, latest_checkpoint_file)
-    print(f"🔍 Found latest checkpoint: {latest_checkpoint_file}")
+    latest_checkpoint_path = os.path.join(checkpoint_dir, epoch_map[latest_epoch])
+    print(f"🔍 Found latest checkpoint: {epoch_map[latest_epoch]}")
 
-    print("\n📦 Loading data and preparing for testing...")
+    # 2. Prepare data loader and process ONLY the test logs
+    print("\n📦 Loading test data...")
+    activity_map_path = os.path.join(checkpoint_dir, 'activity_map.pth')
+
     loader = XESLogLoader()
-    # 1. Build vocabulary from training logs
-    loader.load_and_build_vocab_from_training_logs(CONFIG['log_paths']['training'])
-    # 2. Process the test log using the built vocabulary
-    testing_logs = loader.process_logs(CONFIG['log_paths']['testing'])
+    # Load the activity -> ID mapping created during training
+    loader.load_activity_map(activity_map_path)
+    # Transform ONLY the test logs to generate embeddings on the fly
+    testing_logs = loader.transform(CONFIG['log_paths']['testing'])
 
+    # 3. Initialize model and load trained weights
     torch.manual_seed(42)
     np.random.seed(42)
     model = MetaLearner(
         embedding_dim=CONFIG['embedding_dim'],
         num_feat_dim=CONFIG['num_numerical_features'],
-        d_model=CONFIG['d_model'],
-        n_heads=CONFIG['n_heads'],
-        n_layers=CONFIG['n_layers'],
-        dropout=CONFIG['dropout']
+        d_model=CONFIG['d_model'], n_heads=CONFIG['n_heads'],
+        n_layers=CONFIG['n_layers'], dropout=CONFIG['dropout']
     )
     print(f"💾 Loading weights from {latest_checkpoint_path}...")
     model.load_state_dict(torch.load(latest_checkpoint_path))
 
+    # 4. Create tasks and run evaluation
     test_log_name = list(CONFIG['log_paths']['testing'].keys())[0]
     unseen_log = testing_logs.get(test_log_name)
-
     if not unseen_log:
-        print(f"❌ Error: Test log '{test_log_name}' could not be processed. Please check the file path.")
+        print(f"❌ Error: Test log '{test_log_name}' could not be processed.")
         exit()
 
     print("\n🛠️ Creating test tasks...")
@@ -168,8 +162,6 @@ if __name__ == '__main__':
     }
 
     evaluate_model(
-        model,
-        test_tasks,
-        CONFIG['num_shots_test'],
-        CONFIG['num_test_episodes']
+        model, test_tasks,
+        CONFIG['num_shots_test'], CONFIG['num_test_episodes']
     )
