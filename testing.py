@@ -11,6 +11,7 @@ import re
 from config import CONFIG
 from data_generator import XESLogLoader, get_task_data
 from components.meta_learner import MetaLearner
+from time_transf import inverse_transform_time
 
 
 def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
@@ -121,9 +122,9 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
                     print(f"[{k}-shot] MAE: NaN (No valid predictions)")
                     continue
 
-                # Apply the inverse function: exp(x) - 1
-                valid_preds = np.expm1(valid_preds_transformed)
-                valid_labels = np.expm1(valid_labels_transformed)
+                # Apply the inverse time transformation
+                valid_preds = inverse_transform_time(valid_preds_transformed)
+                valid_labels = inverse_transform_time(valid_labels_transformed)
 
                 # Ensure no negative predictions after inverse transform (can happen with small negative preds)
                 valid_preds[valid_preds < 0] = 0

@@ -8,6 +8,7 @@ import numpy as np
 # --- Import from project files ---
 # This is needed for the stand-alone execution block
 from config import CONFIG
+from time_transf import transform_time
 
 
 class XESLogLoader:
@@ -182,7 +183,7 @@ def get_task_data(log, task_type, max_seq_len=10):
                 last_event_time = trace[-1]['timestamp']
                 current_event_time = prefix[-1]['timestamp']
                 remaining_time_hours = (last_event_time - current_event_time) / 3600.0
-                label = np.log1p(remaining_time_hours)
+                label = transform_time(remaining_time_hours)
                 tasks.append((prefix, label))
     return tasks
 
