@@ -84,7 +84,8 @@ def train(model, loader, config):
             task_type = random.choice(['classification', 'regression'])
             task_data_pool = random.choice(training_tasks[task_type])
 
-            if not task_data_pool: continue
+            if not task_data_pool:
+                continue
 
             if task_type == 'classification':
                 episode = create_episode(
@@ -106,15 +107,17 @@ def train(model, loader, config):
                 continue
 
             support_set, query_set = episode
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             predictions, true_labels = model(support_set, query_set, task_type)
 
-            if predictions is None: continue
+            if predictions is None:
+                continue
 
             if task_type == 'classification':
-                loss = F.cross_entropy(predictions, true_labels, ignore_index=-100)
-            else:  # regression
-                loss = F.huber_loss(predictions.squeeze(), true_labels) * 0.01
+                # label smoothing improves calibration and stability in few-shot settings
+                loss = F.cross_entropy(predictions, true_labels, ignore_index=-100, label_smoothing=0.10)
+            else:  # regression on log1p scale (time target already transformed)
+                loss = F.huber_loss(predictions.squeeze(), true_labels)  # keep full signal (no 0.01 downscale)
 
             if not torch.isnan(loss):
                 loss.backward()

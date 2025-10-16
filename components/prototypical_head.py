@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 def _l2_normalize(x: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     """Performs L2 normalization on the last dimension of a tensor."""
     return x / x.norm(p=2, dim=-1, keepdim=True).clamp_min(eps)
@@ -16,13 +17,15 @@ class PrototypicalHead(nn.Module):
 
     def __init__(self, init_logit_scale: float = 10.0):
         super().__init__()
-        # NEW: learnable temperature for cosine logits (helps early convergence/calibration).
+        # Learnable temperature for cosine logits (helps early convergence/calibration).
         self.logit_scale = nn.Parameter(torch.tensor(float(init_logit_scale)))
+        # Single scalar to shrink class prototypes toward the global centroid (few-shot robustness).
+        self._proto_shrink = nn.Parameter(torch.tensor(-2.0))  # sigmoid(-2) ~ 0.119 (mild by default)
 
     def forward_classification(self, support_features, support_labels, query_features):
         """
         Calculates logits for the query samples using cosine-similarity
-        prototypes built from support features.
+        prototypes built from support features (with soft shrinkage).
         """
         if support_features.numel() == 0:
             return None, None
@@ -32,16 +35,21 @@ class PrototypicalHead(nn.Module):
         query_features = _l2_normalize(query_features)
 
         unique_classes = torch.unique(support_labels)
-        prototypes = []
+        class_means = []
         for cls in unique_classes:
-            # Calculate prototype as the mean of support vectors for that class
+            # Prototype as the mean of support vectors for that class
             proto = support_features[support_labels == cls].mean(dim=0)
-            prototypes.append(proto)
+            class_means.append(proto)
+        class_means = torch.stack(class_means, dim=0)  # (C, D)
 
-        prototypes = torch.stack(prototypes, dim=0)
+        # Shrinkage toward global centroid to reduce variance in few-shot regimes
+        global_centroid = support_features.mean(dim=0, keepdim=True)  # (1, D)
+        alpha = torch.sigmoid(self._proto_shrink).clamp(0.0, 0.5)     # limit shrinkage
+        prototypes = (1.0 - alpha) * class_means + alpha * global_centroid
+
         prototypes = _l2_normalize(prototypes)  # Re-normalize the final prototypes
 
-        # Cosine similarity is a simple dot product with normalized vectors.
+        # Cosine similarity is a dot product with normalized vectors.
         # Apply learnable temperature to control margin/sharpness of logits.
         scale = self.logit_scale.clamp(1.0, 100.0)
         logits = (query_features @ prototypes.t()) * scale
@@ -72,8 +80,7 @@ class PrototypicalHead(nn.Module):
 
         gamma = 1.0 / (median_dist + eps)
 
-        # Calculate kernel weights using softmax, which is equivalent to an RBF kernel
-        # and ensures weights sum to 1. weights = exp(-gamma * dist^2)
+        # Calculate kernel weights using softmax, ensures weights sum to 1. weights = exp(-gamma * dist^2)
         weights = F.softmax(-gamma * distances_sq, dim=1)
 
         # Prediction is the weighted average of the support labels

@@ -85,29 +85,41 @@ class XESLogLoader:
         print("✅ Log loading complete. Ready for dynamic mapping.")
 
     def remap_logs(self, fixed_vocab_sizes: dict):
-        """Generates new random integer mappings for each log and applies them."""
+        """
+        Generates new random integer mappings for each log and applies them.
+
+        IMPORTANT: index 0 is reserved as PAD across the whole pipeline.
+        We therefore draw targets from [1 .. V-1].
+        """
         self.processed_logs.clear()  # Clear mappings from the previous epoch/run
 
         for name, vocabs in self.log_specific_vocabs.items():
             # Create random mapping for activities
             num_unique_acts = len(vocabs['activity'])
-            if num_unique_acts > fixed_vocab_sizes['activity']:
+            max_act = fixed_vocab_sizes['activity']
+            if num_unique_acts > (max_act - 1):
                 raise ValueError(
-                    f"Log '{name}' has {num_unique_acts} activities, but fixed size is {fixed_vocab_sizes['activity']}.")
-            act_targets = np.random.choice(fixed_vocab_sizes['activity'], num_unique_acts, replace=False)
+                    f"Log '{name}' has {num_unique_acts} activities, but fixed size (excluding PAD) is {max_act - 1}."
+                )
+            act_pool = np.arange(1, max_act, dtype=int)  # 0 reserved for PAD
+            act_targets = np.random.choice(act_pool, num_unique_acts, replace=False)
             activity_map = {val: i for val, i in zip(vocabs['activity'], act_targets)}
 
             # Create random mapping for resources
             num_unique_res = len(vocabs['resource'])
-            if num_unique_res > fixed_vocab_sizes['resource']:
+            max_res = fixed_vocab_sizes['resource']
+            if num_unique_res > (max_res - 1):
                 raise ValueError(
-                    f"Log '{name}' has {num_unique_res} resources, but fixed size is {fixed_vocab_sizes['resource']}.")
-            res_targets = np.random.choice(fixed_vocab_sizes['resource'], num_unique_res, replace=False)
+                    f"Log '{name}' has {num_unique_res} resources, but fixed size (excluding PAD) is {max_res - 1}."
+                )
+            res_pool = np.arange(1, max_res, dtype=int)  # 0 reserved for PAD
+            res_targets = np.random.choice(res_pool, num_unique_res, replace=False)
             resource_map = {val: i for val, i in zip(vocabs['resource'], res_targets)}
 
             # Apply the new mapping to the raw log data
             log_with_new_ids = []
-            if name not in self.raw_logs: continue
+            if name not in self.raw_logs:
+                continue
 
             for raw_trace in self.raw_logs[name]:
                 processed_trace = []
@@ -127,7 +139,8 @@ class XESLogLoader:
 
         for case_id, trace_df in df.groupby(case_id_key):
             trace_df = trace_df.sort_values(by=timestamp_key)
-            if trace_df.empty: continue
+            if trace_df.empty:
+                continue
 
             trace = []
             start_time = trace_df.iloc[0][timestamp_key]
@@ -169,7 +182,8 @@ def get_task_data(log, task_type, max_seq_len=10):
         return tasks
 
     for trace in log:
-        if len(trace) < 3: continue
+        if len(trace) < 3:
+            continue
 
         for i in range(1, len(trace) - 1):
             prefix = trace[:i + 1]

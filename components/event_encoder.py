@@ -34,7 +34,7 @@ class PositionalEncoding(nn.Module):
 class EventEncoder(nn.Module):
     """
     Encodes a sequence of event embeddings using a Transformer Encoder and
-    aggregates them with a light attention-pooling head (mask-aware).
+    aggregates them with a hybrid CLS + mask-aware attention pooling head.
     """
 
     def __init__(self, d_model, n_heads, n_layers, dropout=0.1):
@@ -42,12 +42,15 @@ class EventEncoder(nn.Module):
         self.pos_encoder = PositionalEncoding(d_model, dropout)
         self.d_model = d_model
 
-        # NEW: Use Pre-Norm (norm_first=True) for more stable optimization.
-        # NEW: Keep the feed-forward width small and proportional to d_model.
+        # Learnable [CLS] token
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
+        nn.init.normal_(self.cls_token, std=0.02)
+
+        # Pre-Norm transformer (stable) with modest FF width
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=n_heads,
-            dim_feedforward=max(4 * d_model, d_model),  # 4x width keeps model small & stable
+            dim_feedforward=max(4 * d_model, d_model),
             dropout=dropout,
             batch_first=True,
             activation='gelu',
@@ -55,7 +58,7 @@ class EventEncoder(nn.Module):
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
 
-        # NEW: Attention pooling over time to produce a robust sequence representation.
+        # Attention pooling over time (excluding CLS) to produce a robust sequence representation.
         self.attn_pool = nn.Linear(d_model, 1)
         self.out_norm = nn.LayerNorm(d_model)
 
@@ -69,24 +72,42 @@ class EventEncoder(nn.Module):
             torch.Tensor: Aggregated representation for each sequence.
                           Shape (batch_size, d_model)
         """
+        B, T, D = src.shape
+
+        # Prepend CLS
+        cls = self.cls_token.expand(B, 1, D)
+        src = torch.cat([cls, src], dim=1)  # (B, 1+T, D)
+
+        # Extend mask (CLS is never padded)
+        if src_key_padding_mask is not None:
+            pad_col = torch.zeros((B, 1), dtype=torch.bool, device=src_key_padding_mask.device)
+            src_key_padding_mask = torch.cat([pad_col, src_key_padding_mask], dim=1)  # (B, 1+T)
+
         # Standard Transformer scaling before adding positions
         src = src * math.sqrt(self.d_model)
         src = self.pos_encoder(src)
 
         # Encode
-        output = self.transformer_encoder(src, src_key_padding_mask=src_key_padding_mask)
-        # output: (B, T, d_model)
+        output = self.transformer_encoder(src, src_key_padding_mask=src_key_padding_mask)  # (B, 1+T, D)
 
-        # Mask-aware attention pooling over time
-        attn_logits = self.attn_pool(output).squeeze(-1)  # (B, T)
+        # Split CLS and tokens
+        cls_out = output[:, 0, :]        # (B, D)
+        tokens = output[:, 1:, :]        # (B, T, D)
+
+        # Build mask for tokens only (exclude CLS)
+        token_mask = None
         if src_key_padding_mask is not None:
-            attn_logits = attn_logits.masked_fill(src_key_padding_mask, float('-inf'))
+            token_mask = src_key_padding_mask[:, 1:]  # (B, T)
 
-        # Softmax across time; if a row had all pads (shouldn't happen), softmax would be NaN,
-        # but upstream guarantees at least one valid token per sequence.
+        # Mask-aware attention pooling on tokens
+        attn_logits = self.attn_pool(tokens).squeeze(-1)  # (B, T)
+        if token_mask is not None:
+            attn_logits = attn_logits.masked_fill(token_mask, float('-inf'))
+
         attn_weights = torch.softmax(attn_logits, dim=1)  # (B, T)
-        encoded = (attn_weights.unsqueeze(-1) * output).sum(dim=1)  # (B, d_model)
+        pooled = (attn_weights.unsqueeze(-1) * tokens).sum(dim=1)  # (B, D)
 
-        # Final normalization for stability
+        # Hybrid aggregation: CLS + pooled
+        encoded = 0.5 * (cls_out + pooled)
         encoded = self.out_norm(encoded)
         return encoded
