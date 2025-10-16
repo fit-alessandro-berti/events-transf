@@ -159,14 +159,18 @@ if __name__ == '__main__':
 
     print(f"🔍 Found latest checkpoint: {latest_checkpoint_file}")
 
-    # 2. Load data and build vocabulary for model initialization
-    print("\n📦 Loading logs to build vocabulary and get test data...")
-    # NOTE: Load ALL potential logs to ensure vocabulary consistency with training.
+    # 2. Load data and prepare for testing
+    print("\n📦 Loading logs to get test data...")
     all_paths = {**CONFIG['log_paths']['training'], **CONFIG['log_paths']['testing']}
-
     loader = XESLogLoader()
     loader.load_logs(all_paths)
-    cat_vocabs = loader.get_vocabs()
+
+    # **FIX**: Apply a random integer mapping to the raw logs before testing.
+    print("🎲 Applying a fixed random mapping for the test run...")
+    loader.remap_logs(CONFIG['fixed_vocab_sizes'])
+
+    # **FIX**: The vocabulary sizes for the model are now taken directly from the config.
+    cat_vocabs = CONFIG['fixed_vocab_sizes']
 
     # 3. Initialize model architecture and load weights
     torch.manual_seed(42)
@@ -182,7 +186,7 @@ if __name__ == '__main__':
     print(f"💾 Loading weights from {latest_checkpoint_path}...")
     model.load_state_dict(torch.load(latest_checkpoint_path))
 
-    # 4. Get the test data from the loader
+    # 4. Get the mapped test data from the loader
     test_log_name = list(CONFIG['log_paths']['testing'].keys())[0]
     unseen_log = loader.get_log(test_log_name)
 
