@@ -13,19 +13,25 @@ class PrototypicalHead(nn.Module):
     """
     Performs prediction using class prototypes (classification) or
     kernel regression (regression). This module has almost no trainable params.
+
+    Updates:
+    - Start with a slightly lower logit temperature init (5.0) to avoid
+      over-sharp logits early (helps classification stability with smoothing).
+    - Adaptive prototype shrinkage by support count: shrink more for 1-shot,
+      less for 5/10-shot. Keeps prototypes discriminative when data is richer.
     """
 
-    def __init__(self, init_logit_scale: float = 10.0):
+    def __init__(self, init_logit_scale: float = 5.0):
         super().__init__()
         # Learnable temperature for cosine logits (helps early convergence/calibration).
         self.logit_scale = nn.Parameter(torch.tensor(float(init_logit_scale)))
-        # Single scalar to shrink class prototypes toward the global centroid (few-shot robustness).
+        # Scalar controls base shrinkage; sigmoid -> (0,1). We'll cap in code to <= 0.4.
         self._proto_shrink = nn.Parameter(torch.tensor(-2.0))  # sigmoid(-2) ~ 0.119 (mild by default)
 
     def forward_classification(self, support_features, support_labels, query_features):
         """
         Calculates logits for the query samples using cosine-similarity
-        prototypes built from support features (with soft shrinkage).
+        prototypes built from support features (with adaptive shrinkage).
         """
         if support_features.numel() == 0:
             return None, None
@@ -36,16 +42,22 @@ class PrototypicalHead(nn.Module):
 
         unique_classes = torch.unique(support_labels)
         class_means = []
+        class_counts = []
         for cls in unique_classes:
-            # Prototype as the mean of support vectors for that class
-            proto = support_features[support_labels == cls].mean(dim=0)
+            idx = (support_labels == cls)
+            class_counts.append(idx.sum())
+            proto = support_features[idx].mean(dim=0)
             class_means.append(proto)
-        class_means = torch.stack(class_means, dim=0)  # (C, D)
+        class_means = torch.stack(class_means, dim=0)          # (C, D)
+        counts = torch.stack(class_counts).float().clamp_min(1)  # (C,)
 
-        # Shrinkage toward global centroid to reduce variance in few-shot regimes
+        # Global centroid across all support
         global_centroid = support_features.mean(dim=0, keepdim=True)  # (1, D)
-        alpha = torch.sigmoid(self._proto_shrink).clamp(0.0, 0.5)     # limit shrinkage
-        prototypes = (1.0 - alpha) * class_means + alpha * global_centroid
+
+        # Adaptive shrinkage per class: alpha_c = alpha_base / sqrt(n_c), capped
+        alpha_base = torch.sigmoid(self._proto_shrink).clamp(0.0, 0.4)
+        alpha_per_class = (alpha_base / counts.sqrt()).unsqueeze(1)  # (C,1)
+        prototypes = (1.0 - alpha_per_class) * class_means + alpha_per_class * global_centroid
 
         prototypes = _l2_normalize(prototypes)  # Re-normalize the final prototypes
 

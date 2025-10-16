@@ -88,10 +88,12 @@ def train(model, loader, config):
                 continue
 
             if task_type == 'classification':
+                # Train with up to 7-way episodes to match test regime better
                 episode = create_episode(
                     task_data_pool,
                     config['num_shots_range'],
-                    config['num_queries']
+                    config['num_queries'],
+                    num_ways_range=(2, 7)
                 )
             else:  # Regression
                 if len(task_data_pool) < config['num_shots_range'][1] + config['num_queries']:
@@ -114,10 +116,10 @@ def train(model, loader, config):
                 continue
 
             if task_type == 'classification':
-                # label smoothing improves calibration and stability in few-shot settings
-                loss = F.cross_entropy(predictions, true_labels, ignore_index=-100, label_smoothing=0.10)
+                # slightly reduce label smoothing to improve separability
+                loss = F.cross_entropy(predictions, true_labels, ignore_index=-100, label_smoothing=0.05)
             else:  # regression on log1p scale (time target already transformed)
-                loss = F.huber_loss(predictions.squeeze(), true_labels)  # keep full signal (no 0.01 downscale)
+                loss = F.huber_loss(predictions.squeeze(), true_labels)  # full signal
 
             if not torch.isnan(loss):
                 loss.backward()

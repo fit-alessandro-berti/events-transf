@@ -10,7 +10,11 @@ class EventEmbedder(nn.Module):
     Targeted improvements:
     - Reserve 0 as PAD via padding_idx=0 to keep pad embeddings zero and stable.
     - Log1p-transform numeric features before LayerNorm (robust under heavy tails).
-    - Lightweight FiLM-style gating where numeric stream modulates categorical.
+    - Lightweight FiLM-style gating with *small residual* modulation:
+        gamma = 1 + 0.1 * tanh(W_gamma(num))
+        beta  = 0.1 * tanh(W_beta(num))
+      This preserves categorical separability for classification while still
+      letting numeric context help (esp. for regression).
     """
 
     def __init__(self, cat_vocabs, num_feat_dim, d_model, dropout: float = 0.1):
@@ -32,8 +36,8 @@ class EventEmbedder(nn.Module):
         )
 
         # FiLM-style gating: numeric → (gamma, beta) to modulate categorical branch
-        self.film_gamma = nn.Linear(d_model, d_model)  # produces scale
-        self.film_beta = nn.Linear(d_model, d_model)   # produces shift
+        self.film_gamma = nn.Linear(d_model, d_model)  # scale (small residual)
+        self.film_beta = nn.Linear(d_model, d_model)   # shift (small residual)
 
         # Projection layer to combine embeddings + a normalization for stability
         self.proj = nn.Sequential(
@@ -73,9 +77,9 @@ class EventEmbedder(nn.Module):
         num_feats = self.num_norm(num_feats)
         num_emb = self.num_mlp(num_feats)  # (seq_len, d_model)
 
-        # FiLM gating: numeric modulates categorical
-        gamma = torch.sigmoid(self.film_gamma(num_emb))
-        beta = self.film_beta(num_emb)
+        # FiLM gating (small residual modulation)
+        gamma = 1.0 + 0.1 * torch.tanh(self.film_gamma(num_emb))
+        beta = 0.1 * torch.tanh(self.film_beta(num_emb))
         cat_mod = cat_emb * gamma + beta
 
         # Ensure padded rows stay zero after FiLM modulation

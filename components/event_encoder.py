@@ -35,6 +35,10 @@ class EventEncoder(nn.Module):
     """
     Encodes a sequence of event embeddings using a Transformer Encoder and
     aggregates them with a hybrid CLS + mask-aware attention pooling head.
+
+    Update:
+    - Add a learnable scalar gate to mix CLS and attention pooled representation
+      instead of fixed 50/50. This helps classification without changing width/depth.
     """
 
     def __init__(self, d_model, n_heads, n_layers, dropout=0.1):
@@ -45,6 +49,9 @@ class EventEncoder(nn.Module):
         # Learnable [CLS] token
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
         nn.init.normal_(self.cls_token, std=0.02)
+
+        # Learnable mix between CLS and pooled features (sigmoid -> [0,1])
+        self.mix_logit = nn.Parameter(torch.tensor(0.0))  # starts ~0.5 after sigmoid
 
         # Pre-Norm transformer (stable) with modest FF width
         encoder_layer = nn.TransformerEncoderLayer(
@@ -107,7 +114,8 @@ class EventEncoder(nn.Module):
         attn_weights = torch.softmax(attn_logits, dim=1)  # (B, T)
         pooled = (attn_weights.unsqueeze(-1) * tokens).sum(dim=1)  # (B, D)
 
-        # Hybrid aggregation: CLS + pooled
-        encoded = 0.5 * (cls_out + pooled)
+        # Learnable hybrid aggregation: mix CLS and pooled
+        w = torch.sigmoid(self.mix_logit)
+        encoded = w * cls_out + (1.0 - w) * pooled
         encoded = self.out_norm(encoded)
         return encoded
