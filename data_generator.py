@@ -107,7 +107,6 @@ class XESLogLoader:
                 mapped_name = self.training_activity_names[c]
                 mapped_id = self.activity_to_id[mapped_name]
                 final_activity_id_map[unseen_name] = mapped_id
-                # print(f"    '{unseen_name}' -> '{mapped_name}' (ID: {mapped_id})") # Uncomment for debugging
 
         # --- Embed all activities and resources for this batch ---
         resources_to_embed = sorted(list(combined_df[resource_key].fillna('Unknown').unique()))
@@ -154,7 +153,6 @@ class XESLogLoader:
         return log_with_embeddings
 
     def _convert_df_to_raw_traces(self, df, case_id_key, activity_key, timestamp_key, resource_key, cost_key):
-        # This function remains the same as before
         raw_log = []
         df[timestamp_key] = pd.to_datetime(df[timestamp_key]).dt.tz_localize(None)
 
@@ -196,7 +194,10 @@ class XESLogLoader:
         if not os.path.exists(path):
             raise FileNotFoundError(f"Artifacts file not found at {path}.")
 
-        artifacts = torch.load(path)
+        # --- THIS IS THE ONLY CHANGED LINE ---
+        artifacts = torch.load(path, weights_only=False)
+        # ------------------------------------
+
         self.activity_to_id = artifacts['activity_to_id']
         self.training_activity_names = artifacts['training_activity_names']
         self.training_activity_embeddings = artifacts['training_activity_embeddings']
@@ -204,7 +205,6 @@ class XESLogLoader:
 
 
 def get_task_data(log, task_type, max_seq_len=10):
-    # This function is now slightly simpler as the label is always valid
     tasks = []
     if not log: return tasks
 
@@ -216,9 +216,8 @@ def get_task_data(log, task_type, max_seq_len=10):
                 prefix = prefix[-max_seq_len:]
 
             if task_type == 'classification':
-                # The label should now always be valid due to the mapping
                 label = trace[i + 1]['activity_id']
-                if label != -100:  # Keep safeguard just in case
+                if label != -100:
                     tasks.append((prefix, label))
             elif task_type == 'regression':
                 last_event_time = trace[-1]['timestamp']
