@@ -54,11 +54,11 @@ def transform_time(time_in_seconds):
     Returns:
         float or np.ndarray: The transformed time value(s).
     """
+    # FIX: Check if the input is a scalar to return a scalar, not a 0-D array.
+    is_scalar = np.isscalar(time_in_seconds)
     t = np.asarray(time_in_seconds, dtype=float)
 
     # Define the conditions and corresponding function choices.
-    # np.select evaluates conditions in order and picks the first choice that is True.
-    # The 'default' is used when no conditions are met.
     condlist = [
         t <= T1,  # Condition for the log part
         t > T2  # Condition for the sqrt part
@@ -67,10 +67,12 @@ def transform_time(time_in_seconds):
         np.log1p(t),  # Choice 1: Logarithmic function
         C * np.sqrt(t) + D  # Choice 2: Square root function
     ]
-    # If neither of the above is true, the time is between T1 and T2.
     default = A * t + B  # Default: Linear function
 
-    return np.select(condlist, choicelist, default=default)
+    result = np.select(condlist, choicelist, default=default)
+
+    # FIX: If input was a scalar, return a Python float. Otherwise, return the NumPy array.
+    return result.item() if is_scalar else result
 
 
 def inverse_transform_time(transformed_time):
@@ -84,6 +86,8 @@ def inverse_transform_time(transformed_time):
     Returns:
         float or np.ndarray: The time value(s) in the original scale (seconds).
     """
+    # FIX: Check if the input is a scalar to return a scalar, not a 0-D array.
+    is_scalar = np.isscalar(transformed_time)
     y = np.asarray(transformed_time, dtype=float)
 
     # The conditions are now based on the transformed values Y1 and Y2.
@@ -95,10 +99,10 @@ def inverse_transform_time(transformed_time):
         np.expm1(y),  # Choice 1: Inverse of log is exp(y) - 1
         ((y - D) / C) ** 2  # Choice 2: Inverse of sqrt
     ]
-    # If neither is true, the value corresponds to the linear part.
     default = (y - B) / A  # Default: Inverse of linear
 
     result = np.select(condlist, choicelist, default=default)
+    final_result = np.maximum(0, result)
 
-    # Ensure no negative time predictions due to floating point inaccuracies.
-    return np.maximum(0, result)
+    # FIX: If input was a scalar, return a Python float. Otherwise, return the NumPy array.
+    return final_result.item() if is_scalar else final_result
