@@ -16,7 +16,6 @@ def calculate_baselines(test_tasks):
     """Calculates performance for trivial baseline models."""
     print("\n--- Evaluating Baseline Models ---")
 
-    # Classification: Majority Class Baseline
     cls_labels = [label for _, label in test_tasks['classification']]
     if cls_labels:
         majority_class = Counter(cls_labels).most_common(1)[0][0]
@@ -24,7 +23,6 @@ def calculate_baselines(test_tasks):
         accuracy = accuracy_score(cls_labels, baseline_preds)
         print(f"Classification (Majority Class Baseline) Accuracy: {accuracy:.4f}")
 
-    # Regression: Mean Value Baseline
     reg_labels = np.array([label for _, label in test_tasks['regression']])
     if reg_labels.size > 0:
         mean_value = reg_labels.mean()
@@ -35,51 +33,60 @@ def calculate_baselines(test_tasks):
 
 
 def main():
-    # For reproducibility
     torch.manual_seed(42)
     np.random.seed(42)
 
-    print("1. Loading raw data from XES files...")
-    all_paths = {**CONFIG['log_paths']['training'], **CONFIG['log_paths']['testing']}
+    # --- 1. Data Loading and Pre-processing ---
+    print("1. Initializing data loader and building vocabulary from training logs...")
     loader = XESLogLoader()
-    loader.load_logs(all_paths)
+    # Load training logs to build vocabulary and semantic embeddings
+    loader.load_and_build_vocab_from_training_logs(CONFIG['log_paths']['training'])
 
-    print("\n2. Initializing model with fixed vocabulary sizes...")
+    # Process training logs into traces with embeddings
+    training_logs = loader.process_logs(CONFIG['log_paths']['training'])
+    # Process test logs using the same vocabulary
+    testing_logs = loader.process_logs(CONFIG['log_paths']['testing'])
+
+    print("\n2. Creating training and testing tasks...")
+    # Create training tasks from the processed training logs
+    training_tasks = {
+        'classification': [get_task_data(log, 'classification') for log in training_logs.values()],
+        'regression': [get_task_data(log, 'regression') for log in training_logs.values()]
+    }
+
+    # Create test tasks from the processed test logs
+    test_log_name = list(CONFIG['log_paths']['testing'].keys())[0]
+    unseen_log = testing_logs.get(test_log_name)
+    if not unseen_log:
+        print(f"\n❌ Error: Test log '{test_log_name}' could not be processed. Please check the file path.")
+        return
+
+    test_tasks = {
+        'classification': get_task_data(unseen_log, 'classification'),
+        'regression': get_task_data(unseen_log, 'regression')
+    }
+
+    # --- 2. Model Initialization ---
+    print("\n3. Initializing model with semantic embedding support...")
     model = MetaLearner(
-        cat_vocabs=CONFIG['fixed_vocab_sizes'],
+        embedding_dim=CONFIG['embedding_dim'],
         num_feat_dim=CONFIG['num_numerical_features'],
         d_model=CONFIG['d_model'],
         n_heads=CONFIG['n_heads'],
         n_layers=CONFIG['n_layers'],
         dropout=CONFIG['dropout']
     )
-
     print(f"Model has {sum(p.numel() for p in model.parameters() if p.requires_grad):,} trainable parameters.")
 
-    print("\n3. Starting training (with dynamic per-epoch remapping)...")
-    train(model, loader, CONFIG)
+    # --- 3. Training ---
+    print("\n4. Starting training...")
+    train(model, training_tasks, CONFIG)
 
-    print("\n4. Preparing test data (with a new fixed random mapping)...")
-    test_log_name = list(CONFIG['log_paths']['testing'].keys())[0]
-
-    # Generate a single, fixed random mapping for the entire test phase
-    loader.remap_logs(CONFIG['fixed_vocab_sizes'])
-    unseen_log = loader.get_log(test_log_name)
-
-    if not unseen_log:
-        print(f"\n❌ Error: Test log '{test_log_name}' could not be loaded. Please check the file path in './logs/'.")
-        return
-
-    # Create test tasks based on this fixed mapping
-    test_tasks = {
-        'classification': get_task_data(unseen_log, 'classification'),
-        'regression': get_task_data(unseen_log, 'regression')
-    }
-
-    print("\n5. Starting testing...")
+    # --- 4. Testing ---
+    print("\n5. Starting testing on unseen log...")
     evaluate_model(model, test_tasks, CONFIG['num_shots_test'], CONFIG['num_test_episodes'])
 
-    # Add baseline evaluation for context
+    # --- 5. Baselines ---
     calculate_baselines(test_tasks)
 
 

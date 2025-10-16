@@ -4,179 +4,184 @@ import random
 import pm4py
 import os
 import numpy as np
+from sentence_transformers import SentenceTransformer
 
 # --- Import from project files ---
-# This is needed for the stand-alone execution block
 from config import CONFIG
 from time_transf import transform_time
 
 
 class XESLogLoader:
     """
-    Loads and processes event logs from XES files for dynamic re-mapping.
-
-    This class reads XES files, stores the traces with their original categorical
-    string values (e.g., 'register request'), and keeps track of the unique
-    activities/resources for each log. A dedicated method, `remap_logs`, is
-    used to apply a new random integer mapping to these raw traces, which is
-    done at the start of each training epoch or test run.
+    Loads event logs, builds a vocabulary from the training set,
+    and uses a sentence transformer to create semantic embeddings for activities
+    and resources. It also creates a stable integer mapping for activity labels.
     """
 
-    def __init__(self):
-        self.raw_logs = {}  # Stores logs with original string values
-        self.processed_logs = {}  # Stores logs with integer mappings, refreshed each epoch
-        self.log_specific_vocabs = {}  # Stores unique string values for each log, e.g., {'A': {'activity': [...]}}
+    def __init__(self, model_name='all-MiniLM-L6-v2'):
+        self.raw_training_logs = {}
+        self.vocab = {'activity': set(), 'resource': set()}
+        self.vocab_embeddings = {'activity': {}, 'resource': {}}
+        self.activity_to_id = {}  # For classification labels
 
-    def load_logs(self, log_paths: dict,
-                  case_id_key='case:concept:name',
-                  activity_key='concept:name',
-                  timestamp_key='time:timestamp',
-                  resource_key='org:resource',
-                  cost_key='amount'):
-        """
-        Loads multiple XES logs, extracts raw traces, and identifies log-specific vocabularies.
-        No global vocabulary is built; mappings are handled by the `remap_logs` method.
-        """
-        print("Reading XES files and extracting raw trace data...")
+        try:
+            self.model = SentenceTransformer(model_name)
+            self.embedding_dim = self.model.get_sentence_embedding_dimension()
+        except Exception as e:
+            print(f"❌ Error initializing SentenceTransformer model '{model_name}': {e}")
+            print(
+                "Please ensure 'sentence-transformers' is installed (`pip install sentence-transformers`) and you have an internet connection.")
+            self.model = None
+            self.embedding_dim = 384
+
+        self.pad_embedding = np.zeros(self.embedding_dim, dtype=np.float32)
+
+    def load_and_build_vocab_from_training_logs(self, training_log_paths: dict, case_id_key='case:concept:name',
+                                                activity_key='concept:name', timestamp_key='time:timestamp',
+                                                resource_key='org:resource', cost_key='amount'):
+        if not self.model:
+            raise RuntimeError("SentenceTransformer model not available.")
+
+        print("1. Loading training XES files to build vocabulary...")
         all_dfs = []
-        for name, path in log_paths.items():
+        for name, path in training_log_paths.items():
             if not os.path.exists(path):
-                print(f"⚠️ Warning: File not found at {path}. Skipping.")
+                print(f"⚠️ Warning: Training log not found at {path}. Skipping.")
                 continue
             try:
                 log = pm4py.read_xes(path)
                 df = pm4py.convert_to_dataframe(log)
-                df['log_name'] = name  # Keep track of origin
+                df['log_name'] = name
                 all_dfs.append(df)
             except Exception as e:
                 print(f"❌ Error reading or converting file {path}: {e}")
                 continue
 
         if not all_dfs:
-            print("❌ Error: No valid XES logs were loaded. Aborting.")
-            return
+            raise ValueError("❌ No valid training logs were loaded. Cannot build vocabulary.")
 
         combined_df = pd.concat(all_dfs, ignore_index=True)
 
-        if cost_key not in combined_df.columns:
-            print(f"⚠️ Warning: Cost attribute '{cost_key}' not found. Random costs will be generated.")
+        print("2. Extracting unique activities/resources and creating mappings...")
+        # Vocabulary for embeddings
+        self.vocab['activity'].update(combined_df[activity_key].unique())
+        if resource_key in combined_df.columns:
+            combined_df[resource_key] = combined_df[resource_key].fillna('Unknown')
+            self.vocab['resource'].update(combined_df[resource_key].unique())
+        self.vocab['resource'].add('Unknown')
 
-        # --- Process each log individually to get raw traces and vocabularies ---
-        print("Extracting log-specific vocabularies and raw traces...")
+        # Create stable integer mapping for activity labels
+        sorted_activities = sorted(list(self.vocab['activity']))
+        self.activity_to_id = {name: i for i, name in enumerate(sorted_activities)}
+        print(f"  - Created stable mapping for {len(self.activity_to_id)} activities.")
+
+        print(
+            f"3. Generating embeddings for {len(self.vocab['activity'])} activities and {len(self.vocab['resource'])} resources...")
+        for cat_type, item_set in self.vocab.items():
+            items = sorted(list(item_set))
+            if items:
+                embeddings = self.model.encode(items, show_progress_bar=True, normalize_embeddings=True)
+                self.vocab_embeddings[cat_type] = {item: emb for item, emb in zip(items, embeddings)}
+
+        print("4. Storing raw training log data...")
         for name, group_df in combined_df.groupby('log_name'):
-            # 1. Store unique string values for this specific log
-            unique_activities = sorted(list(group_df[activity_key].unique()))
-
-            unique_resources = set()
-            if resource_key in group_df.columns:
-                group_df[resource_key] = group_df[resource_key].fillna('Unknown')
-                unique_resources.update(group_df[resource_key].unique())
-            unique_resources.add('Unknown')  # Ensure 'Unknown' is always a fallback
-
-            self.log_specific_vocabs[name] = {
-                'activity': unique_activities,
-                'resource': sorted(list(unique_resources))
-            }
-
-            # 2. Convert dataframe to raw traces (with string values for categoricals)
-            self.raw_logs[name] = self._convert_df_to_raw_traces(
+            self.raw_training_logs[name] = self._convert_df_to_raw_traces(
                 group_df, case_id_key, activity_key, timestamp_key, resource_key, cost_key
             )
-        print("✅ Log loading complete. Ready for dynamic mapping.")
+        print("✅ Vocabulary and embeddings built successfully from training data.")
 
-    def remap_logs(self, fixed_vocab_sizes: dict):
-        """
-        Generates new random integer mappings for each log and applies them.
+    def process_logs(self, log_paths: dict, case_id_key='case:concept:name', activity_key='concept:name',
+                     timestamp_key='time:timestamp', resource_key='org:resource', cost_key='amount') -> dict:
+        if not self.vocab_embeddings['activity']:
+            raise RuntimeError("Vocabulary not built. Call `load_and_build_vocab_from_training_logs` first.")
 
-        IMPORTANT: index 0 is reserved as PAD across the whole pipeline.
-        We therefore draw targets from [1 .. V-1].
-        """
-        self.processed_logs.clear()  # Clear mappings from the previous epoch/run
+        print(f"\nProcessing logs from paths: {list(log_paths.keys())}")
+        processed_logs = {}
+        for name, path in log_paths.items():
+            if name in self.raw_training_logs:
+                print(f"  - Using pre-loaded raw data for '{name}'...")
+                raw_traces = self.raw_training_logs[name]
+            else:
+                if not os.path.exists(path):
+                    print(f"⚠️ Warning: File not found at {path}. Skipping.")
+                    continue
+                try:
+                    print(f"  - Loading and processing '{name}' from file...")
+                    log = pm4py.read_xes(path)
+                    df = pm4py.convert_to_dataframe(log)
+                    raw_traces = self._convert_df_to_raw_traces(
+                        df, case_id_key, activity_key, timestamp_key, resource_key, cost_key
+                    )
+                except Exception as e:
+                    print(f"❌ Error processing file {path}: {e}")
+                    continue
 
-        for name, vocabs in self.log_specific_vocabs.items():
-            # Create random mapping for activities
-            num_unique_acts = len(vocabs['activity'])
-            max_act = fixed_vocab_sizes['activity']
-            if num_unique_acts > (max_act - 1):
-                raise ValueError(
-                    f"Log '{name}' has {num_unique_acts} activities, but fixed size (excluding PAD) is {max_act - 1}."
-                )
-            act_pool = np.arange(1, max_act, dtype=int)  # 0 reserved for PAD
-            act_targets = np.random.choice(act_pool, num_unique_acts, replace=False)
-            activity_map = {val: i for val, i in zip(vocabs['activity'], act_targets)}
+            processed_logs[name] = self._apply_embeddings_to_traces(raw_traces)
 
-            # Create random mapping for resources
-            num_unique_res = len(vocabs['resource'])
-            max_res = fixed_vocab_sizes['resource']
-            if num_unique_res > (max_res - 1):
-                raise ValueError(
-                    f"Log '{name}' has {num_unique_res} resources, but fixed size (excluding PAD) is {max_res - 1}."
-                )
-            res_pool = np.arange(1, max_res, dtype=int)  # 0 reserved for PAD
-            res_targets = np.random.choice(res_pool, num_unique_res, replace=False)
-            resource_map = {val: i for val, i in zip(vocabs['resource'], res_targets)}
+        print("✅ Log processing complete.")
+        return processed_logs
 
-            # Apply the new mapping to the raw log data
-            log_with_new_ids = []
-            if name not in self.raw_logs:
-                continue
+    def _apply_embeddings_to_traces(self, raw_traces):
+        unknown_resource_emb = self.vocab_embeddings['resource'].get('Unknown', self.pad_embedding)
+        # Use a special ID for unknown activities not in the training vocab
+        unknown_activity_id = -100
 
-            for raw_trace in self.raw_logs[name]:
-                processed_trace = []
-                for event in raw_trace:
-                    processed_event = event.copy()
-                    processed_event['activity'] = activity_map.get(event['activity'])
-                    processed_event['resource'] = resource_map.get(event['resource'])
-                    processed_trace.append(processed_event)
-                log_with_new_ids.append(processed_trace)
+        log_with_embeddings = []
+        for raw_trace in raw_traces:
+            processed_trace = []
+            for event in raw_trace:
+                activity_emb = self.vocab_embeddings['activity'].get(event['activity'], self.pad_embedding)
+                resource_emb = self.vocab_embeddings['resource'].get(event['resource'], unknown_resource_emb)
+                activity_id = self.activity_to_id.get(event['activity'], unknown_activity_id)
 
-            self.processed_logs[name] = log_with_new_ids
+                processed_event = {
+                    'activity_embedding': activity_emb,
+                    'resource_embedding': resource_emb,
+                    'activity_id': activity_id,  # For classification labels
+                    'cost': event['cost'],
+                    'time_from_start': event['time_from_start'],
+                    'time_from_previous': event['time_from_previous'],
+                    'timestamp': event['timestamp'],
+                    'case_id': event['case_id']
+                }
+                processed_trace.append(processed_event)
+            log_with_embeddings.append(processed_trace)
+        return log_with_embeddings
 
     def _convert_df_to_raw_traces(self, df, case_id_key, activity_key, timestamp_key, resource_key, cost_key):
-        """Converts a DataFrame into a list of traces, keeping categorical values as strings."""
         raw_log = []
         df[timestamp_key] = pd.to_datetime(df[timestamp_key]).dt.tz_localize(None)
+        if cost_key not in df.columns:
+            print(f"⚠️ Warning: Cost attribute '{cost_key}' not found. Random costs will be generated.")
 
         for case_id, trace_df in df.groupby(case_id_key):
             trace_df = trace_df.sort_values(by=timestamp_key)
-            if trace_df.empty:
-                continue
-
+            if trace_df.empty: continue
             trace = []
             start_time = trace_df.iloc[0][timestamp_key]
             prev_time = start_time
-
             for _, event in trace_df.iterrows():
                 current_time = event[timestamp_key]
                 cost_val = event.get(cost_key, round(random.uniform(5.0, 100.0), 2))
                 if not isinstance(cost_val, (int, float)):
                     cost_val = round(random.uniform(5.0, 100.0), 2)
-
                 event_dict = {
                     'case_id': case_id,
-                    'activity': event[activity_key],  # Store raw string
+                    'activity': event[activity_key],
                     'timestamp': current_time.timestamp(),
-                    'resource': event.get(resource_key, 'Unknown'),  # Store raw string
+                    'resource': event.get(resource_key, 'Unknown'),
                     'cost': cost_val,
                     'time_from_start': (current_time - start_time).total_seconds(),
                     'time_from_previous': (current_time - prev_time).total_seconds(),
                 }
                 trace.append(event_dict)
                 prev_time = current_time
-
             if trace:
                 raw_log.append(trace)
         return raw_log
 
-    def get_log(self, name: str):
-        """Retrieves a processed log by its name. Must be called after `remap_logs`."""
-        return self.processed_logs.get(name)
-
 
 def get_task_data(log, task_type, max_seq_len=10):
-    """
-    Creates subsequences and corresponding labels for a given task.
-    """
     tasks = []
     if not log:
         return tasks
@@ -191,8 +196,10 @@ def get_task_data(log, task_type, max_seq_len=10):
                 prefix = prefix[-max_seq_len:]
 
             if task_type == 'classification':
-                label = trace[i + 1]['activity']
-                tasks.append((prefix, label))
+                label = trace[i + 1]['activity_id']
+                # Ignore tasks where the label is an activity unseen during training
+                if label != -100:
+                    tasks.append((prefix, label))
             elif task_type == 'regression':
                 last_event_time = trace[-1]['timestamp']
                 current_event_time = prefix[-1]['timestamp']
@@ -204,37 +211,39 @@ def get_task_data(log, task_type, max_seq_len=10):
 
 # --- Direct Execution Block (for demonstration) ---
 if __name__ == '__main__':
-    print("--- Demonstrating Dynamic Mapping Log Loader ---")
+    print("--- Demonstrating Semantic Embedding Log Loader ---")
 
-    all_paths = {**CONFIG['log_paths']['training'], **CONFIG['log_paths']['testing']}
-
-    if not os.path.isdir('./logs') or not any(os.path.exists(p) for p in all_paths.values()):
+    if not os.path.isdir('./logs'):
         print("\n❌ CRITICAL: No XES files found in the './logs' directory.")
     else:
-        loader = XESLogLoader()
-        loader.load_logs(all_paths)
+        try:
+            loader = XESLogLoader()
+            # 1. Build vocabulary and embeddings from training logs
+            loader.load_and_build_vocab_from_training_logs(CONFIG['log_paths']['training'])
 
-        # Apply an initial random mapping to see the result
-        print("\n🎲 Applying initial random mapping...")
-        loader.remap_logs(CONFIG['fixed_vocab_sizes'])
+            # 2. Process a log (e.g., a test log) using the built vocabulary
+            processed_logs = loader.process_logs({'D_unseen': CONFIG['log_paths']['testing']['D_unseen']})
 
-        log_a_data = loader.get_log('A')
-        if not log_a_data:
-            print("\nLog 'A' could not be loaded or mapped.")
-        else:
-            print(f"\nSuccessfully loaded and mapped log 'A' with {len(log_a_data)} traces.")
-            flat_log = [event for trace in log_a_data for event in trace]
-            df = pd.DataFrame(flat_log)
+            unseen_log_data = processed_logs.get('D_unseen')
 
-            # Convert time columns for better readability
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
-            df['time_from_start'] = pd.to_timedelta(df['time_from_start'], unit='s')
-            df['time_from_previous'] = pd.to_timedelta(df['time_from_previous'], unit='s')
+            if not unseen_log_data:
+                print("\nLog 'D_unseen' could not be processed.")
+            else:
+                print(f"\nSuccessfully processed log 'D_unseen' with {len(unseen_log_data)} traces.")
+                flat_log = [event for trace in unseen_log_data for event in trace]
+                df = pd.DataFrame(flat_log)
 
-            print("\n--- Sample of Processed Log 'A' with random integer IDs (first 20 events) ---")
-            print(df[['case_id', 'activity', 'resource', 'cost', 'timestamp']].head(20).to_string())
+                print("\n--- Sample of Processed Log 'D_unseen' (first 5 events) ---")
+                # Showing a subset of columns for readability
+                sample_df = df[['case_id', 'activity_id', 'cost', 'time_from_start', 'time_from_previous']].head(5)
+                print(sample_df.to_string())
+                print(f"\nShape of activity embedding for first event: {df['activity_embedding'].iloc[0].shape}")
+                print(f"Shape of resource embedding for first event: {df['resource_embedding'].iloc[0].shape}")
 
-            print("\n--- Vocabulary Information ---")
-            vocabs = CONFIG['fixed_vocab_sizes']
-            print(f"Activity vocabulary size (fixed): {vocabs['activity']}")
-            print(f"Resource vocabulary size (fixed): {vocabs['resource']}")
+                print("\n--- Vocabulary Information ---")
+                print(f"Total activities in vocab: {len(loader.vocab['activity'])}")
+                print(f"Total resources in vocab: {len(loader.vocab['resource'])}")
+                print(f"Embedding dimension: {loader.embedding_dim}")
+
+        except (ImportError, RuntimeError) as e:
+            print(f"\nEncountered an error: {e}")

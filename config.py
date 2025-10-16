@@ -19,12 +19,8 @@ CONFIG = {
         }
     },
 
-    # NEW: Define fixed vocabulary sizes for embedding layers
-    # This replaces the need to build a dictionary from the data.
-    'fixed_vocab_sizes': {
-        'activity': 100,  # Max number of unique activities the model can handle
-        'resource': 50,  # Max number of unique resources the model can handle
-    },
+    # NEW: Define embedding dimension from the sentence transformer model
+    'embedding_dim': 384, # all-MiniLM-L6-v2 dimension
 
     # --- Lightweight Model Hyperparameters (for quick training) ---
     'd_model': 64,  # Reduced from 128

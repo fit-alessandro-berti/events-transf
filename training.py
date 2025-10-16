@@ -8,7 +8,7 @@ from collections import defaultdict
 import os
 
 # Import from project files
-from data_generator import get_task_data
+from data_generator import get_task_data  # This is not used, but let's keep it for potential future debugging.
 from torch.optim import lr_scheduler
 
 
@@ -45,9 +45,9 @@ def create_episode(task_pool, num_shots_range, num_queries_per_class, num_ways_r
     return support_set, query_set
 
 
-def train(model, loader, config):
+def train(model, training_tasks, config):
     """
-    Main training loop with dynamic per-epoch re-mapping of categorical features.
+    Main training loop. It receives pre-processed training tasks with semantic embeddings.
     """
     print("🚀 Starting meta-training...")
     optimizer = optim.AdamW(model.parameters(), lr=config['lr'])
@@ -56,39 +56,35 @@ def train(model, loader, config):
     checkpoint_dir = './checkpoints'
     os.makedirs(checkpoint_dir, exist_ok=True)
 
+    # Flatten the list of task pools for easier random sampling
+    cls_task_pools = [pool for pool in training_tasks['classification'] if pool]
+    reg_task_pools = [pool for pool in training_tasks['regression'] if pool]
+
+    if not cls_task_pools and not reg_task_pools:
+        print("❌ Error: No valid training tasks available. Aborting training.")
+        return
+
     for epoch in range(config['epochs']):
         model.train()
-
-        # --- DYNAMIC REMAPPING ---
-        # Generate new random integer mappings for all logs for this epoch
-        print(f"\n--- 🎲 Generating new random mappings for Epoch {epoch + 1} ---")
-        loader.remap_logs(config['fixed_vocab_sizes'])
-
-        # Re-create training tasks using the newly mapped logs
-        training_logs = {name: loader.get_log(name) for name in config['log_paths']['training']}
-        valid_training_logs = [log for log in training_logs.values() if log]
-
-        if not valid_training_logs:
-            print(f"⚠️ Warning: No valid training logs found for epoch {epoch + 1}. Skipping.")
-            continue
-
-        training_tasks = {
-            'classification': [get_task_data(log, 'classification') for log in valid_training_logs],
-            'regression': [get_task_data(log, 'regression') for log in valid_training_logs]
-        }
-        # -------------------------
-
         total_loss = 0.0
+
         progress_bar = tqdm(range(config['episodes_per_epoch']), desc=f"Epoch {epoch + 1}/{config['epochs']}")
         for _ in progress_bar:
             task_type = random.choice(['classification', 'regression'])
-            task_data_pool = random.choice(training_tasks[task_type])
+
+            # Select a random task pool of the chosen type
+            if task_type == 'classification' and cls_task_pools:
+                task_data_pool = random.choice(cls_task_pools)
+            elif task_type == 'regression' and reg_task_pools:
+                task_data_pool = random.choice(reg_task_pools)
+            else:  # Fallback if one task type has no data
+                task_type = 'regression' if reg_task_pools else 'classification'
+                task_data_pool = random.choice(reg_task_pools if reg_task_pools else cls_task_pools)
 
             if not task_data_pool:
                 continue
 
             if task_type == 'classification':
-                # Train with up to 7-way episodes to match test regime better
                 episode = create_episode(
                     task_data_pool,
                     config['num_shots_range'],
@@ -116,10 +112,9 @@ def train(model, loader, config):
                 continue
 
             if task_type == 'classification':
-                # slightly reduce label smoothing to improve separability
                 loss = F.cross_entropy(predictions, true_labels, ignore_index=-100, label_smoothing=0.05)
-            else:  # regression on log1p scale (time target already transformed)
-                loss = F.huber_loss(predictions.squeeze(), true_labels)  # full signal
+            else:
+                loss = F.huber_loss(predictions.squeeze(), true_labels)
 
             if not torch.isnan(loss):
                 loss.backward()
