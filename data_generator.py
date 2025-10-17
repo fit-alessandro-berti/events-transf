@@ -26,7 +26,7 @@ class XESLogLoader:
         print(f"Data loader initialized with strategy: '{self.strategy}'")
 
         # --- Artifacts learned from training data ---
-        self.activity_to_id = {}  # For classification labels
+        self.activity_to_id = {}  # For classification labels (pretrained) & evaluation
         self.char_to_id = {}  # For learned character embeddings
         self.training_activity_names = []
         self.training_activity_embeddings = None
@@ -39,7 +39,6 @@ class XESLogLoader:
 
         self.sbert_model = None
         if self.strategy == 'pretrained':
-            # (omitted for brevity - this part is unchanged)
             try:
                 self.sbert_model = SentenceTransformer(sbert_model_name)
                 self.sbert_embedding_dim = self.sbert_model.get_sentence_embedding_dimension()
@@ -65,11 +64,11 @@ class XESLogLoader:
         if not all_activities: raise ValueError("No activities found in training logs.")
         self.training_activity_names = sorted(list(all_activities))
 
-        # The activity_to_id map is ALWAYS created for providing classification labels
+        # This map is now only strictly necessary for the 'pretrained' strategy and the
+        # embedding quality evaluation, but we create it always for consistency.
         self.activity_to_id = {name: i for i, name in enumerate(self.training_activity_names)}
 
         if self.strategy == 'learned':
-            # Create a character-level vocabulary from all names
             all_names = all_activities.union(all_resources)
             all_chars = set("".join(all_names))
             self.char_to_id = {char: i + 2 for i, char in enumerate(sorted(list(all_chars)))}
@@ -77,18 +76,17 @@ class XESLogLoader:
             self.char_to_id[self.UNK_TOKEN] = self.unk_id
             print(f"  - Created character vocabulary of size {len(self.char_to_id)}.")
         elif self.strategy == 'pretrained':
-            # (omitted for brevity - this part is unchanged)
             print("  - Generating and storing embeddings for all training activities...")
             self.training_activity_embeddings = self.sbert_model.encode(
-                self.training_activity_names, show_progress_bar=True, normalize_embeddings=True)
+                self.training_activity_names, show_progress_bar=True, normalize_embeddings=True
+            )
 
         print("✅ Fit complete.")
         return self
 
     def transform(self, log_paths: dict, case_id_key='case:concept:name', activity_key='concept:name',
                   timestamp_key='time:timestamp', resource_key='org:resource', cost_key='amount'):
-        # (omitted for brevity - outer logic is unchanged)
-        if not self.activity_to_id: raise RuntimeError("Loader has not been fitted.")
+        if not self.training_activity_names: raise RuntimeError("Loader has not been fitted.")
         print(f"\nTransforming logs: {list(log_paths.keys())}")
         all_dfs = [pm4py.convert_to_dataframe(pm4py.read_xes(path)) for path in log_paths.values() if
                    os.path.exists(path)]
@@ -106,7 +104,15 @@ class XESLogLoader:
         return processed_logs
 
     def _transform_learned(self, raw_traces):
-        """Passes raw strings for the 'learned' strategy."""
+        """
+        Passes raw strings and creates a dynamic, local mapping for labels.
+        This ensures that even unseen logs can be used for classification tasks.
+        """
+        # --- NEW: Create a local label map for this specific log ---
+        all_activities_in_log = set(event['activity'] for trace in raw_traces for event in trace)
+        local_activity_to_id = {name: i for i, name in enumerate(sorted(list(all_activities_in_log)))}
+        # -----------------------------------------------------------
+
         log_with_strings = []
         for raw_trace in raw_traces:
             processed_trace = []
@@ -114,7 +120,8 @@ class XESLogLoader:
                 processed_event = {
                     'activity_name': event['activity'],
                     'resource_name': event['resource'],
-                    'activity_id': self.activity_to_id.get(event['activity'], -100),  # Label for classification
+                    # Use the new local map for the classification label
+                    'activity_id': local_activity_to_id.get(event['activity']),
                     'cost': event['cost'],
                     'time_from_start': event['time_from_start'],
                     'time_from_previous': event['time_from_previous'],
@@ -125,7 +132,6 @@ class XESLogLoader:
         return log_with_strings
 
     def _convert_df_to_raw_traces(self, df, case_id_key, activity_key, timestamp_key, resource_key, cost_key):
-        # (omitted for brevity - this function is unchanged)
         raw_log = []
         df[timestamp_key] = pd.to_datetime(df[timestamp_key]).dt.tz_localize(None)
         df[resource_key] = df[resource_key].fillna('Unknown')
@@ -149,7 +155,6 @@ class XESLogLoader:
         return raw_log
 
     def _transform_pretrained(self, df, raw_traces, activity_key, resource_key):
-        # (omitted for brevity - this function is unchanged)
         current_activities = sorted(list(df[activity_key].unique()))
         final_activity_id_map = self.activity_to_id.copy()
         unseen_activities = [name for name in current_activities if name not in self.activity_to_id]
@@ -183,10 +188,9 @@ class XESLogLoader:
         return log_with_embeddings
 
     def save_training_artifacts(self, path):
-        # (omitted for brevity - logic adapted for new vocabs)
-        artifacts = {'strategy': self.strategy, 'activity_to_id': self.activity_to_id}
+        artifacts = {'strategy': self.strategy, 'activity_to_id': self.activity_to_id,
+                     'training_activity_names': self.training_activity_names}
         if self.strategy == 'pretrained':
-            artifacts['training_activity_names'] = self.training_activity_names
             artifacts['training_activity_embeddings'] = self.training_activity_embeddings
         elif self.strategy == 'learned':
             artifacts['char_to_id'] = self.char_to_id
@@ -194,15 +198,14 @@ class XESLogLoader:
         print(f"💾 Training artifacts for '{self.strategy}' strategy saved to {path}")
 
     def load_training_artifacts(self, path):
-        # (omitted for brevity - logic adapted for new vocabs)
         if not os.path.exists(path): raise FileNotFoundError(f"Artifacts file not found at {path}.")
         artifacts = torch.load(path, weights_only=False)
         if artifacts['strategy'] != self.strategy:
             raise ValueError(
                 f"Artifact strategy '{artifacts['strategy']}' does not match loader strategy '{self.strategy}'.")
         self.activity_to_id = artifacts['activity_to_id']
+        self.training_activity_names = artifacts['training_activity_names']
         if self.strategy == 'pretrained':
-            self.training_activity_names = artifacts['training_activity_names']
             self.training_activity_embeddings = artifacts['training_activity_embeddings']
         elif self.strategy == 'learned':
             self.char_to_id = artifacts['char_to_id']
@@ -210,7 +213,6 @@ class XESLogLoader:
 
 
 def get_task_data(log, task_type, max_seq_len=10):
-    # (omitted for brevity - this function is unchanged)
     tasks = []
     if not log: return tasks
     for trace in log:
@@ -218,9 +220,13 @@ def get_task_data(log, task_type, max_seq_len=10):
         for i in range(1, len(trace) - 1):
             prefix = trace[:i + 1]
             if len(prefix) > max_seq_len: prefix = prefix[-max_seq_len:]
+
+            # The activity_id can now be None if get() fails, so we check for that
+            next_event_activity_id = trace[i + 1]['activity_id']
+
             if task_type == 'classification':
-                label = trace[i + 1]['activity_id']
-                if label != -100: tasks.append((prefix, label))
+                if next_event_activity_id is not None:
+                    tasks.append((prefix, next_event_activity_id))
             elif task_type == 'regression':
                 remaining_time = (trace[-1]['timestamp'] - prefix[-1]['timestamp']) / 3600.0
                 tasks.append((prefix, transform_time(remaining_time)))
