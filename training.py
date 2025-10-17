@@ -22,8 +22,8 @@ except ImportError:
 
 def evaluate_embedding_quality(model, loader: XESLogLoader):
     """
-    Calculates and prints metrics about the learned activity embeddings.
-    This function is only active for the 'learned' strategy.
+    Calculates and prints metrics about the learned activity embeddings by
+    generating them on-the-fly with the character CNN.
     """
     if model.strategy != 'learned':
         return
@@ -34,38 +34,43 @@ def evaluate_embedding_quality(model, loader: XESLogLoader):
 
     print("\n📊 Evaluating Learned Embedding Quality...")
 
-    # Get embeddings and vocabulary
-    embeddings = model.embedder.activity_embedding.weight.data.clone().detach()
-    embeddings = F.normalize(embeddings, p=2, dim=1).cpu().numpy()
-    id_to_name = {v: k for k, v in loader.activity_to_id.items()}
-
-    # Filter out special tokens like <PAD> and <UNK>
-    valid_ids = [i for i, name in id_to_name.items() if name not in [loader.PAD_TOKEN, loader.UNK_TOKEN]]
-
-    if len(valid_ids) < 2:
+    # --- MODIFIED SECTION ---
+    # Get the list of all activity names from the loader
+    activity_names = loader.training_activity_names
+    if len(activity_names) < 2:
         print("  - Not enough activities in vocabulary to evaluate.")
         return
 
+    # Generate embeddings for all activity names using the character CNN
+    with torch.no_grad():
+        model.eval()  # Set model to evaluation mode
+        embeddings = model.embedder.char_embedder(
+            activity_names, model.embedder.char_to_id
+        )
+        model.train()  # Set it back to training mode
+
+    # Normalize embeddings for cosine similarity calculation
+    embeddings = F.normalize(embeddings, p=2, dim=1).cpu().numpy()
+    # --- END MODIFIED SECTION ---
+
     # Calculate string distances and cosine similarities for all pairs
     pairs = []
-    for id1, id2 in itertools.combinations(valid_ids, 2):
-        name1, name2 = id_to_name[id1], id_to_name[id2]
+    # Iterate over indices of the name/embedding lists
+    for i, j in itertools.combinations(range(len(activity_names)), 2):
+        name1, name2 = activity_names[i], activity_names[j]
 
-        # Normalized Levenshtein distance (0=identical, 1=completely different)
+        # Normalized Levenshtein distance
         str_dist = levenshtein_distance(name1, name2) / max(len(name1), len(name2))
 
-        # Cosine similarity
-        cos_sim = np.dot(embeddings[id1], embeddings[id2])
+        # Cosine similarity from the generated embeddings
+        cos_sim = np.dot(embeddings[i], embeddings[j])
 
         pairs.append({'str_dist': str_dist, 'cos_sim': cos_sim})
 
     if not pairs:
         return
 
-    # Sort pairs by string distance
     pairs.sort(key=lambda x: x['str_dist'])
-
-    # Get top 5 most similar and dissimilar by name
     num_pairs_to_show = min(5, len(pairs))
     similar_by_name = pairs[:num_pairs_to_show]
     dissimilar_by_name = pairs[-num_pairs_to_show:]
@@ -105,6 +110,7 @@ def train(model, training_tasks, loader, config):
     """
     Main training loop. Now receives the loader to access vocabulary for evaluation.
     """
+    # The rest of this function remains unchanged
     print("🚀 Starting meta-training...")
     optimizer = optim.AdamW(model.parameters(), lr=config['lr'])
     scheduler = lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.5)
@@ -175,7 +181,6 @@ def train(model, training_tasks, loader, config):
         current_lr = optimizer.param_groups[0]['lr']
         print(f"\nEpoch {epoch + 1} finished. Average Loss: {avg_loss:.4f} | Current LR: {current_lr:.6f}")
 
-        # --- NEW: Evaluate embedding quality at the end of the epoch ---
         evaluate_embedding_quality(model, loader)
 
         scheduler.step()
