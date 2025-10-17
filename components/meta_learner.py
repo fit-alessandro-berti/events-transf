@@ -3,7 +3,10 @@ import torch
 import torch.nn as nn
 import pandas as pd
 import numpy as np
-from .event_embedder import PretrainedEventEmbedder, LearnedEventEmbedder
+# --- MODIFIED IMPORTS ---
+from .learned_event_embedder import LearnedEventEmbedder
+from .pretrained_event_embedder import PretrainedEventEmbedder
+# ------------------------
 from .event_encoder import EventEncoder
 from .prototypical_head import PrototypicalHead
 
