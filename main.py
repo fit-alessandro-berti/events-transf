@@ -66,7 +66,8 @@ def main():
 
     # --- 4. Training ---
     print("\n--- Phase 4: Starting Model Training ---")
-    train(model, training_tasks, CONFIG)
+    # Pass the loader object to the train function for vocabulary access
+    train(model, training_tasks, loader, CONFIG)
 
     print("\n✅ Training complete. Run 'testing.py' to evaluate.")
 
