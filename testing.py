@@ -172,13 +172,18 @@ if __name__ == '__main__':
         model_params = {'embedding_dim': CONFIG['pretrained_settings']['embedding_dim']}
     else: # learned
         model_params = {
-            'vocab_sizes': {'activity': len(loader.activity_to_id), 'resource': len(loader.resource_to_id)},
-            'embedding_dims': {'activity': CONFIG['learned_settings']['activity_embedding_dim'], 'resource': CONFIG['learned_settings']['resource_embedding_dim']}
+            'char_vocab_size': len(loader.char_to_id),
+            'char_embedding_dim': CONFIG['learned_settings']['char_embedding_dim'],
+            'char_cnn_output_dim': CONFIG['learned_settings']['char_cnn_output_dim'],
         }
     model = MetaLearner(
         strategy=strategy, num_feat_dim=CONFIG['num_numerical_features'],
         d_model=CONFIG['d_model'], n_heads=CONFIG['n_heads'], n_layers=CONFIG['n_layers'], dropout=CONFIG['dropout'], **model_params
     ).to(device)
+
+    # Pass the character vocabulary to the model
+    if strategy == 'learned':
+        model.set_char_vocab(loader.char_to_id)
 
     print(f"💾 Loading weights from {latest_checkpoint_path}...")
     model.load_state_dict(torch.load(latest_checkpoint_path, map_location=device))

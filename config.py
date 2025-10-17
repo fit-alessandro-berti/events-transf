@@ -20,19 +20,19 @@ CONFIG = {
     },
 
     # --- Core Model Strategy ---
-    # Choose 'pretrained' or 'learned'
     # 'pretrained': Uses fixed embeddings from a SentenceTransformer model.
-    # 'learned':    Learns embeddings for activities/resources from scratch.
+    # 'learned':    Learns embeddings from scratch using a character-level CNN.
     'embedding_strategy': 'learned',  # <-- CHOOSE YOUR STRATEGY HERE
 
     # --- Strategy-Specific Parameters ---
     'pretrained_settings': {
         'sbert_model': 'all-MiniLM-L6-v2',
-        'embedding_dim': 384,  # Dimension of the sbert model
+        'embedding_dim': 384,
     },
     'learned_settings': {
-        'activity_embedding_dim': 64,
-        'resource_embedding_dim': 32,
+        # Character-level CNN settings
+        'char_embedding_dim': 32,    # Embedding size for each character
+        'char_cnn_output_dim': 64,   # Final embedding size for an activity/resource name
     },
 
     # --- Transformer Hyperparameters ---

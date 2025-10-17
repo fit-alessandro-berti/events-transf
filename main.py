@@ -9,7 +9,6 @@ from data_generator import XESLogLoader, get_task_data
 from components.meta_learner import MetaLearner
 from training import train
 
-
 def main():
     torch.manual_seed(42)
     np.random.seed(42)
@@ -39,34 +38,28 @@ def main():
     # --- 3. Model Initialization ---
     print("\n--- Phase 3: Initializing Model ---")
     if strategy == 'pretrained':
-        model_params = {
-            'embedding_dim': CONFIG['pretrained_settings']['embedding_dim'],
-        }
+        model_params = {'embedding_dim': CONFIG['pretrained_settings']['embedding_dim']}
     else: # learned
         model_params = {
-            'vocab_sizes': {
-                'activity': len(loader.activity_to_id),
-                'resource': len(loader.resource_to_id)
-            },
-            'embedding_dims': {
-                'activity': CONFIG['learned_settings']['activity_embedding_dim'],
-                'resource': CONFIG['learned_settings']['resource_embedding_dim']
-            }
+            'char_vocab_size': len(loader.char_to_id),
+            'char_embedding_dim': CONFIG['learned_settings']['char_embedding_dim'],
+            'char_cnn_output_dim': CONFIG['learned_settings']['char_cnn_output_dim'],
         }
 
     model = MetaLearner(
-        strategy=strategy,
-        num_feat_dim=CONFIG['num_numerical_features'],
+        strategy=strategy, num_feat_dim=CONFIG['num_numerical_features'],
         d_model=CONFIG['d_model'], n_heads=CONFIG['n_heads'],
-        n_layers=CONFIG['n_layers'], dropout=CONFIG['dropout'],
-        **model_params
+        n_layers=CONFIG['n_layers'], dropout=CONFIG['dropout'], **model_params
     ).to(device)
+
+    # Pass the character vocabulary to the model
+    if strategy == 'learned':
+        model.set_char_vocab(loader.char_to_id)
 
     print(f"Model has {sum(p.numel() for p in model.parameters() if p.requires_grad):,} trainable parameters.")
 
     # --- 4. Training ---
     print("\n--- Phase 4: Starting Model Training ---")
-    # Pass the loader object to the train function for vocabulary access
     train(model, training_tasks, loader, CONFIG)
 
     print("\n✅ Training complete. Run 'testing.py' to evaluate.")

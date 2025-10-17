@@ -2,26 +2,29 @@
 import torch
 import torch.nn as nn
 import pandas as pd
+from .char_cnn_embedder import CharCNNEmbedder
+
 
 class LearnedEventEmbedder(nn.Module):
     """
-    Processes events by looking up learnable embeddings for categorical features (IDs),
-    combining them with numerical features, and projecting to d_model.
+    Generates event embeddings by creating vectors for activity and resource
+    names on-the-fly from their characters using a CharCNNEmbedder.
     """
-    def __init__(self, vocab_sizes: dict, embedding_dims: dict, num_feat_dim: int, d_model: int, dropout: float = 0.1):
+
+    def __init__(self, char_vocab_size: int, char_emb_dim: int, char_cnn_out_dim: int,
+                 num_feat_dim: int, d_model: int, dropout: float = 0.1):
         super().__init__()
-        # --- Learnable Embedding Layers ---
-        self.activity_embedding = nn.Embedding(
-            vocab_sizes['activity'], embedding_dims['activity'], padding_idx=0
-        )
-        self.resource_embedding = nn.Embedding(
-            vocab_sizes['resource'], embedding_dims['resource'], padding_idx=0
-        )
 
-        # Total input dimension is the sum of all feature dimensions
-        total_input_dim = embedding_dims['activity'] + embedding_dims['resource'] + num_feat_dim
+        # This single module will generate embeddings for both activities and resources
+        self.char_embedder = CharCNNEmbedder(
+            char_vocab_size, char_emb_dim, char_cnn_out_dim
+        )
+        self.char_to_id = {}  # This will be populated from the loader
 
-        # Projection layer to map the concatenated features to d_model
+        # Total input dimension is two generated embeddings + numerical features
+        total_input_dim = (2 * char_cnn_out_dim) + num_feat_dim
+
+        # Projection layer
         self.projection = nn.Sequential(
             nn.LayerNorm(total_input_dim),
             nn.Linear(total_input_dim, d_model),
@@ -33,23 +36,24 @@ class LearnedEventEmbedder(nn.Module):
     def forward(self, events_df: pd.DataFrame):
         """
         Args:
-            events_df (pd.DataFrame): DataFrame with activity/resource IDs.
+            events_df (pd.DataFrame): DataFrame with 'activity_name' and 'resource_name'.
 
         Returns:
             torch.Tensor: A tensor of shape (seq_len, d_model).
         """
-        device = self.activity_embedding.weight.device
+        # 1. Get lists of names from the DataFrame
+        activity_names = events_df['activity_name'].tolist()
+        resource_names = events_df['resource_name'].tolist()
 
-        # 1. Extract IDs and look up learnable embeddings
-        act_ids = torch.from_numpy(events_df['activity_id'].values).long().to(device)
-        res_ids = torch.from_numpy(events_df['resource_id'].values).long().to(device)
-        act_emb = self.activity_embedding(act_ids)
-        res_emb = self.resource_embedding(res_ids)
+        # 2. Generate embeddings for all names
+        act_emb = self.char_embedder(activity_names, self.char_to_id)
+        res_emb = self.char_embedder(resource_names, self.char_to_id)
 
-        # 2. Extract and process numerical features
+        # 3. Extract and process numerical features
+        device = act_emb.device
         num_arr = events_df[['cost', 'time_from_start', 'time_from_previous']].values
         num_feats = torch.log1p(torch.as_tensor(num_arr, dtype=torch.float32, device=device).clamp_min(0))
 
-        # 3. Concatenate all features and project to d_model
+        # 4. Concatenate all features and project
         combined_input = torch.cat([act_emb, res_emb, num_feats], dim=-1)
         return self.dropout(self.projection(combined_input))
