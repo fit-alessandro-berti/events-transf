@@ -19,13 +19,24 @@ CONFIG = {
         }
     },
 
-    # --- Learnable Embedding Configuration ---
-    'activity_embedding_dim': 64,  # Dimension for the learnable activity embedding
-    'resource_embedding_dim': 32,  # Dimension for the learnable resource embedding
-    'similarity_coeff': 0.7,       # 0.0 = random init, 1.0 = pre-trained init
+    # --- Core Model Strategy ---
+    # Choose 'pretrained' or 'learned'
+    # 'pretrained': Uses fixed embeddings from a SentenceTransformer model.
+    # 'learned':    Learns embeddings for activities/resources from scratch.
+    'embedding_strategy': 'learned',  # <-- CHOOSE YOUR STRATEGY HERE
 
-    # --- Lightweight Model Hyperparameters (for quick training) ---
-    'd_model': 128, # Increased to better handle concatenated embeddings
+    # --- Strategy-Specific Parameters ---
+    'pretrained_settings': {
+        'sbert_model': 'all-MiniLM-L6-v2',
+        'embedding_dim': 384,  # Dimension of the sbert model
+    },
+    'learned_settings': {
+        'activity_embedding_dim': 64,
+        'resource_embedding_dim': 32,
+    },
+
+    # --- Transformer Hyperparameters ---
+    'd_model': 128,
     'n_heads': 4,
     'n_layers': 2,
     'dropout': 0.1,
@@ -36,12 +47,12 @@ CONFIG = {
     'num_queries': 10,
     'num_shots_test': [1, 5, 10],
 
-    # --- Training Parameters (Significantly reduced for speed) ---
+    # --- Training Parameters ---
     'lr': 3e-4,
     'epochs': 4,
     'episodes_per_epoch': 200,
 
-    # --- Test Parameters (Reduced for faster evaluation) ---
+    # --- Test Parameters ---
     'num_test_episodes': 200,
     'num_cases_for_testing': 500,
 }

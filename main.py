@@ -16,6 +16,8 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
+    strategy = CONFIG['embedding_strategy']
+    print(f"--- Running with embedding strategy: '{strategy}' ---")
 
     checkpoint_dir = './checkpoints'
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -23,15 +25,9 @@ def main():
 
     # --- 1. Data Preparation ---
     print("--- Phase 1: Preparing Training Data ---")
-    loader = XESLogLoader()
-
-    # Fit loader on training logs to create maps and get initial embeddings
+    loader = XESLogLoader(strategy=strategy, sbert_model_name=CONFIG['pretrained_settings']['sbert_model'])
     loader.fit(CONFIG['log_paths']['training'])
-
-    # Save these artifacts for the stand-alone test script
     loader.save_training_artifacts(artifacts_path)
-
-    # Transform ONLY the training logs to get traces with activity/resource IDs
     training_logs = loader.transform(CONFIG['log_paths']['training'])
 
     print("\n--- Phase 2: Creating Training Tasks ---")
@@ -42,29 +38,29 @@ def main():
 
     # --- 3. Model Initialization ---
     print("\n--- Phase 3: Initializing Model ---")
-    vocab_sizes = {
-        'activity': len(loader.activity_to_id),
-        'resource': len(loader.resource_to_id)
-    }
-    embedding_dims = {
-        'activity': CONFIG['activity_embedding_dim'],
-        'resource': CONFIG['resource_embedding_dim']
-    }
+    if strategy == 'pretrained':
+        model_params = {
+            'embedding_dim': CONFIG['pretrained_settings']['embedding_dim'],
+        }
+    else: # learned
+        model_params = {
+            'vocab_sizes': {
+                'activity': len(loader.activity_to_id),
+                'resource': len(loader.resource_to_id)
+            },
+            'embedding_dims': {
+                'activity': CONFIG['learned_settings']['activity_embedding_dim'],
+                'resource': CONFIG['learned_settings']['resource_embedding_dim']
+            }
+        }
 
     model = MetaLearner(
-        vocab_sizes=vocab_sizes,
-        embedding_dims=embedding_dims,
+        strategy=strategy,
         num_feat_dim=CONFIG['num_numerical_features'],
         d_model=CONFIG['d_model'], n_heads=CONFIG['n_heads'],
-        n_layers=CONFIG['n_layers'], dropout=CONFIG['dropout']
+        n_layers=CONFIG['n_layers'], dropout=CONFIG['dropout'],
+        **model_params
     ).to(device)
-
-    # Initialize the learnable embeddings with a blend of SBERT and random noise
-    model.initialize_embeddings(
-        initial_activity_embs=loader.initial_activity_embeddings,
-        initial_resource_embs=loader.initial_resource_embeddings,
-        similarity_coeff=CONFIG['similarity_coeff']
-    )
 
     print(f"Model has {sum(p.numel() for p in model.parameters() if p.requires_grad):,} trainable parameters.")
 
