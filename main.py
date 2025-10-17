@@ -13,6 +13,9 @@ from training import train
 def main():
     torch.manual_seed(42)
     np.random.seed(42)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
 
     checkpoint_dir = './checkpoints'
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -22,13 +25,13 @@ def main():
     print("--- Phase 1: Preparing Training Data ---")
     loader = XESLogLoader()
 
-    # Fit loader on training logs to create map and store embeddings
+    # Fit loader on training logs to create maps and get initial embeddings
     loader.fit(CONFIG['log_paths']['training'])
 
     # Save these artifacts for the stand-alone test script
     loader.save_training_artifacts(artifacts_path)
 
-    # Transform ONLY the training logs
+    # Transform ONLY the training logs to get traces with activity/resource IDs
     training_logs = loader.transform(CONFIG['log_paths']['training'])
 
     print("\n--- Phase 2: Creating Training Tasks ---")
@@ -39,12 +42,30 @@ def main():
 
     # --- 3. Model Initialization ---
     print("\n--- Phase 3: Initializing Model ---")
+    vocab_sizes = {
+        'activity': len(loader.activity_to_id),
+        'resource': len(loader.resource_to_id)
+    }
+    embedding_dims = {
+        'activity': CONFIG['activity_embedding_dim'],
+        'resource': CONFIG['resource_embedding_dim']
+    }
+
     model = MetaLearner(
-        embedding_dim=CONFIG['embedding_dim'],
+        vocab_sizes=vocab_sizes,
+        embedding_dims=embedding_dims,
         num_feat_dim=CONFIG['num_numerical_features'],
         d_model=CONFIG['d_model'], n_heads=CONFIG['n_heads'],
         n_layers=CONFIG['n_layers'], dropout=CONFIG['dropout']
+    ).to(device)
+
+    # Initialize the learnable embeddings with a blend of SBERT and random noise
+    model.initialize_embeddings(
+        initial_activity_embs=loader.initial_activity_embeddings,
+        initial_resource_embs=loader.initial_resource_embeddings,
+        similarity_coeff=CONFIG['similarity_coeff']
     )
+
     print(f"Model has {sum(p.numel() for p in model.parameters() if p.requires_grad):,} trainable parameters.")
 
     # --- 4. Training ---

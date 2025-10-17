@@ -21,18 +21,18 @@ warnings.filterwarnings("ignore", category=ConvergenceWarning)
 
 
 def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
-    # This function remains unchanged
+    # This function remains unchanged in its core logic, but let's provide it for completeness
     print("\n🔬 Starting meta-testing on the Transformer-based Meta-Learner...")
     model.eval()
     results = {}
+    device = next(model.parameters()).device
 
     for task_type, task_data in test_tasks.items():
         print(f"\n--- Evaluating task: {task_type} ---")
         if not task_data:
             print(f"Skipping {task_type}: No test data available.")
             continue
-        # ... (rest of the function is identical) ...
-        # (For brevity, the unchanged part of this function is omitted)
+
         if task_type == 'classification':
             class_dict = defaultdict(list)
             for seq, label in task_data:
@@ -84,7 +84,9 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
                     all_preds.extend(predictions.view(-1).cpu().tolist())
                     all_labels.extend(true_labels.view(-1).cpu().tolist())
 
-            if episodes_generated == 0: continue
+            if episodes_generated == 0:
+                print(f"[{k}-shot] Skipped: Not enough data to generate episodes.")
+                continue
 
             if task_type == 'classification':
                 accuracy = accuracy_score(all_labels, all_preds)
@@ -97,30 +99,26 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
                 r2 = r2_score(valid_labels, valid_preds)
                 print(f"[{k}-shot] MAE: {mae:.4f} | R-squared: {r2:.4f}")
 
+def _extract_features_for_sklearn(model, trace):
+    """
+    Uses the trained meta-learner model to encode a single trace prefix
+    into a fixed-size feature vector for use with scikit-learn.
+    """
+    model.eval()
+    with torch.no_grad():
+        # The model's _process_batch expects a list of sequences
+        encoded_vector = model._process_batch([trace])
+        # Return the feature vector as a numpy array
+        return encoded_vector.squeeze(0).cpu().numpy()
 
-def _extract_features_for_sklearn(trace):
-    # This function remains unchanged
-    event_vectors = []
-    for event in trace:
-        semantic_vec = event['activity_embedding'] + event['resource_embedding']
-        numerical_vec = np.log1p([event['cost'], event['time_from_start'], event['time_from_previous']])
-        combined_vec = np.concatenate([semantic_vec, numerical_vec])
-        event_vectors.append(combined_vec)
-    if not event_vectors:
-        return np.zeros(CONFIG['embedding_dim'] + CONFIG['num_numerical_features'])
-    return np.mean(np.array(event_vectors), axis=0)
-
-
-def evaluate_sklearn_baselines(test_tasks, num_shots_list, num_test_episodes=100):
-    # This function remains unchanged
-    print("\n🧪 Starting evaluation of Scikit-Learn Baselines...")
+def evaluate_sklearn_baselines(model, test_tasks, num_shots_list, num_test_episodes=100):
+    print("\n🧪 Starting evaluation of Scikit-Learn Baselines (using learned representations)...")
     for task_type, task_data in test_tasks.items():
         print(f"\n--- Baseline task: {task_type} ---")
         if not task_data:
             print(f"Skipping {task_type}: No test data available.")
             continue
-        # ... (rest of the function is identical) ...
-        # (For brevity, the unchanged part of this function is omitted)
+
         if task_type == 'classification':
             class_dict = defaultdict(list)
             for seq, label in task_data:
@@ -151,25 +149,28 @@ def evaluate_sklearn_baselines(test_tasks, num_shots_list, num_test_episodes=100
 
                 if not support_set or not query_set: continue
 
-                X_train = np.array([_extract_features_for_sklearn(s[0]) for s in support_set])
+                # Use the model to extract features
+                X_train = np.array([_extract_features_for_sklearn(model, s[0]) for s in support_set])
                 y_train = np.array([s[1] for s in support_set])
-                X_test = np.array([_extract_features_for_sklearn(q[0]) for q in query_set])
+                X_test = np.array([_extract_features_for_sklearn(model, q[0]) for q in query_set])
                 y_test = np.array([q[1] for q in query_set])
 
                 if task_type == 'classification':
                     if len(np.unique(y_train)) < 2: continue
-                    model = LogisticRegression(max_iter=100)
+                    sk_model = LogisticRegression(max_iter=100)
                 else:
-                    model = Ridge()
+                    sk_model = Ridge()
                 try:
-                    model.fit(X_train, y_train)
-                    preds = model.predict(X_test)
+                    sk_model.fit(X_train, y_train)
+                    preds = sk_model.predict(X_test)
                     all_preds.extend(preds)
                     all_labels.extend(y_test)
                 except ValueError:
                     continue
 
-            if not all_labels: continue
+            if not all_labels:
+                print(f"[{k}-shot] Skipped: Not enough data to generate episodes.")
+                continue
 
             if task_type == 'classification':
                 accuracy = accuracy_score(all_labels, all_preds)
@@ -185,6 +186,8 @@ def evaluate_sklearn_baselines(test_tasks, num_shots_list, num_test_episodes=100
 
 if __name__ == '__main__':
     print("--- Running Testing Script in Stand-Alone Mode ---")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
     checkpoint_dir = './checkpoints'
     if not os.path.isdir(checkpoint_dir): exit(f"❌ Error: Checkpoint directory '{checkpoint_dir}' not found.")
@@ -200,21 +203,42 @@ if __name__ == '__main__':
     artifacts_path = os.path.join(checkpoint_dir, 'training_artifacts.pth')
 
     loader = XESLogLoader()
-    # Load the training artifacts (map, training embeddings)
+    # Load the training artifacts (maps, initial embeddings)
     loader.load_training_artifacts(artifacts_path)
     # Transform ONLY the test logs, mapping unseen activities
     testing_logs = loader.transform(CONFIG['log_paths']['testing'])
 
     torch.manual_seed(42)
     np.random.seed(42)
+
+    # --- Model Initialization ---
+    vocab_sizes = {
+        'activity': len(loader.activity_to_id),
+        'resource': len(loader.resource_to_id)
+    }
+    embedding_dims = {
+        'activity': CONFIG['activity_embedding_dim'],
+        'resource': CONFIG['resource_embedding_dim']
+    }
     model = MetaLearner(
-        embedding_dim=CONFIG['embedding_dim'],
+        vocab_sizes=vocab_sizes,
+        embedding_dims=embedding_dims,
         num_feat_dim=CONFIG['num_numerical_features'],
         d_model=CONFIG['d_model'], n_heads=CONFIG['n_heads'],
         n_layers=CONFIG['n_layers'], dropout=CONFIG['dropout']
+    ).to(device)
+
+    # Initialize embeddings in the same way as in training for consistency,
+    # even though we are about to load trained weights. This ensures the model
+    # architecture is identical.
+    model.initialize_embeddings(
+        initial_activity_embs=loader.initial_activity_embeddings,
+        initial_resource_embs=loader.initial_resource_embeddings,
+        similarity_coeff=CONFIG['similarity_coeff']
     )
+
     print(f"💾 Loading weights from {latest_checkpoint_path}...")
-    model.load_state_dict(torch.load(latest_checkpoint_path))
+    model.load_state_dict(torch.load(latest_checkpoint_path, map_location=device))
 
     test_log_name = list(CONFIG['log_paths']['testing'].keys())[0]
     unseen_log = testing_logs.get(test_log_name)
@@ -227,4 +251,4 @@ if __name__ == '__main__':
     }
 
     evaluate_model(model, test_tasks, CONFIG['num_shots_test'], CONFIG['num_test_episodes'])
-    evaluate_sklearn_baselines(test_tasks, CONFIG['num_shots_test'], CONFIG['num_test_episodes'])
+    evaluate_sklearn_baselines(model, test_tasks, CONFIG['num_shots_test'], CONFIG['num_test_episodes'])

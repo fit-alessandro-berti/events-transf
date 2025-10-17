@@ -19,27 +19,29 @@ CONFIG = {
         }
     },
 
-    # NEW: Define embedding dimension from the sentence transformer model
-    'embedding_dim': 384, # all-MiniLM-L6-v2 dimension
+    # --- Learnable Embedding Configuration ---
+    'activity_embedding_dim': 64,  # Dimension for the learnable activity embedding
+    'resource_embedding_dim': 32,  # Dimension for the learnable resource embedding
+    'similarity_coeff': 0.7,       # 0.0 = random init, 1.0 = pre-trained init
 
     # --- Lightweight Model Hyperparameters (for quick training) ---
-    'd_model': 64,  # Reduced from 128
-    'n_heads': 4,  # Reduced from 8
-    'n_layers': 2,  # Reduced from 3
+    'd_model': 128, # Increased to better handle concatenated embeddings
+    'n_heads': 4,
+    'n_layers': 2,
     'dropout': 0.1,
     'num_numerical_features': 3,  # cost, time_from_start, time_from_previous
 
     # --- Meta-Learning Parameters ---
-    'num_shots_range': (2, 8),  # A slightly smaller range for faster episodes
+    'num_shots_range': (2, 8),
     'num_queries': 10,
     'num_shots_test': [1, 5, 10],
 
     # --- Training Parameters (Significantly reduced for speed) ---
-    'lr': 3e-4,  # Slightly higher learning rate can help with shorter training
-    'epochs': 4,  # Reduced from 25
-    'episodes_per_epoch': 200,  # Reduced from 1000
+    'lr': 3e-4,
+    'epochs': 4,
+    'episodes_per_epoch': 200,
 
     # --- Test Parameters (Reduced for faster evaluation) ---
-    'num_test_episodes': 200,  # Reduced from 1000
+    'num_test_episodes': 200,
     'num_cases_for_testing': 500,
 }
