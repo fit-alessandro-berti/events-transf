@@ -21,73 +21,46 @@ except ImportError:
 
 
 def evaluate_embedding_quality(model, loader: XESLogLoader):
-    """
-    Calculates and prints metrics about the learned activity embeddings by
-    generating them on-the-fly with the character CNN.
-    """
+    # This function remains unchanged from the previous version
     if model.strategy != 'learned':
         return
-
     if levenshtein_distance is None:
         print("\n⚠️ Skipping embedding evaluation: `pip install python-Levenshtein` to enable.")
         return
-
     print("\n📊 Evaluating Learned Embedding Quality...")
-
-    # --- MODIFIED SECTION ---
-    # Get the list of all activity names from the loader
     activity_names = loader.training_activity_names
     if len(activity_names) < 2:
         print("  - Not enough activities in vocabulary to evaluate.")
         return
-
-    # Generate embeddings for all activity names using the character CNN
     with torch.no_grad():
-        model.eval()  # Set model to evaluation mode
-        embeddings = model.embedder.char_embedder(
-            activity_names, model.embedder.char_to_id
-        )
-        model.train()  # Set it back to training mode
-
-    # Normalize embeddings for cosine similarity calculation
+        model.eval()
+        embeddings = model.embedder.char_embedder(activity_names, model.embedder.char_to_id)
+        model.train()
     embeddings = F.normalize(embeddings, p=2, dim=1).cpu().numpy()
-    # --- END MODIFIED SECTION ---
-
-    # Calculate string distances and cosine similarities for all pairs
     pairs = []
-    # Iterate over indices of the name/embedding lists
     for i, j in itertools.combinations(range(len(activity_names)), 2):
         name1, name2 = activity_names[i], activity_names[j]
-
-        # Normalized Levenshtein distance
         str_dist = levenshtein_distance(name1, name2) / max(len(name1), len(name2))
-
-        # Cosine similarity from the generated embeddings
         cos_sim = np.dot(embeddings[i], embeddings[j])
-
         pairs.append({'str_dist': str_dist, 'cos_sim': cos_sim})
-
     if not pairs:
         return
-
     pairs.sort(key=lambda x: x['str_dist'])
     num_pairs_to_show = min(5, len(pairs))
     similar_by_name = pairs[:num_pairs_to_show]
     dissimilar_by_name = pairs[-num_pairs_to_show:]
-
     avg_sim_for_similar_names = np.mean([p['cos_sim'] for p in similar_by_name])
     avg_sim_for_dissimilar_names = np.mean([p['cos_sim'] for p in dissimilar_by_name])
-
     print(f"  - Avg. Cosine Sim for Top {num_pairs_to_show} Similar Names:   {avg_sim_for_similar_names:.4f}")
     print(f"  - Avg. Cosine Sim for Top {num_pairs_to_show} Dissimilar Names: {avg_sim_for_dissimilar_names:.4f}")
     print("-" * 30)
 
 
-def create_episode(task_pool, num_shots_range, num_queries_per_class, num_ways_range=(2, 5)):
+def create_episode(task_pool, num_shots_range, num_queries_per_class, num_ways_range=(2, 5), shuffle_labels=False):
     """
-    Creates a single meta-learning episode using N-way K-shot sampling.
+    Creates a single meta-learning episode. Can optionally shuffle labels
+    within the episode to force in-context learning.
     """
-    # This function remains unchanged
     class_dict = defaultdict(list)
     for seq, label in task_pool:
         class_dict[label].append((seq, label))
@@ -96,11 +69,27 @@ def create_episode(task_pool, num_shots_range, num_queries_per_class, num_ways_r
     available_classes = [c for c, items in class_dict.items() if len(items) >= num_shots + num_queries_per_class]
     if len(available_classes) < num_ways: return None
     episode_classes = random.sample(available_classes, num_ways)
+
+    # --- NEW: Episodic Label Shuffle Logic ---
+    label_map = {}
+    if shuffle_labels:
+        shuffled_classes = random.sample(episode_classes, len(episode_classes))
+        label_map = {original: shuffled for original, shuffled in zip(episode_classes, shuffled_classes)}
+    # If not shuffling, the map will be empty.
+
     support_set, query_set = [], []
     for cls in episode_classes:
+        # Use the shuffled label if the map exists, otherwise use the original
+        mapped_label = label_map.get(cls, cls)
+
         samples = random.sample(class_dict[cls], num_shots + num_queries_per_class)
-        support_set.extend(samples[:num_shots])
-        query_set.extend(samples[num_shots:])
+
+        # Append samples with the potentially shuffled label
+        for s in samples[:num_shots]:
+            support_set.append((s[0], mapped_label))  # s[0] is the sequence
+        for s in samples[num_shots:]:
+            query_set.append((s[0], mapped_label))
+
     random.shuffle(support_set)
     random.shuffle(query_set)
     return support_set, query_set
@@ -108,9 +97,8 @@ def create_episode(task_pool, num_shots_range, num_queries_per_class, num_ways_r
 
 def train(model, training_tasks, loader, config):
     """
-    Main training loop. Now receives the loader to access vocabulary for evaluation.
+    Main training loop.
     """
-    # The rest of this function remains unchanged
     print("🚀 Starting meta-training...")
     optimizer = optim.AdamW(model.parameters(), lr=config['lr'])
     scheduler = lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.5)
@@ -124,6 +112,11 @@ def train(model, training_tasks, loader, config):
     if not cls_task_pools and not reg_task_pools:
         print("❌ Error: No valid training tasks available. Aborting training.")
         return
+
+    # Get the shuffle flag from the config
+    should_shuffle_labels = config.get('episodic_label_shuffle', False)
+    if should_shuffle_labels:
+        print("✅ Episodic Label Shuffle augmentation is ENABLED.")
 
     for epoch in range(config['epochs']):
         model.train()
@@ -144,9 +137,12 @@ def train(model, training_tasks, loader, config):
             if not task_data_pool: continue
 
             if task_type == 'classification':
-                episode = create_episode(task_data_pool, config['num_shots_range'], config['num_queries'],
-                                         num_ways_range=(2, 7))
-            else:  # Regression
+                # Pass the shuffle flag to the episode creator
+                episode = create_episode(
+                    task_data_pool, config['num_shots_range'], config['num_queries'],
+                    num_ways_range=(2, 7), shuffle_labels=should_shuffle_labels
+                )
+            else:
                 if len(task_data_pool) < config['num_shots_range'][1] + config['num_queries']:
                     episode = None
                 else:

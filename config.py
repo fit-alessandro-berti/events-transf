@@ -22,7 +22,7 @@ CONFIG = {
     # --- Core Model Strategy ---
     # 'pretrained': Uses fixed embeddings from a SentenceTransformer model.
     # 'learned':    Learns embeddings from scratch using a character-level CNN.
-    'embedding_strategy': 'learned',  # <-- CHOOSE YOUR STRATEGY HERE
+    'embedding_strategy': 'learned',
 
     # --- Strategy-Specific Parameters ---
     'pretrained_settings': {
@@ -30,9 +30,8 @@ CONFIG = {
         'embedding_dim': 384,
     },
     'learned_settings': {
-        # Character-level CNN settings
-        'char_embedding_dim': 32,    # Embedding size for each character
-        'char_cnn_output_dim': 64,   # Final embedding size for an activity/resource name
+        'char_embedding_dim': 32,
+        'char_cnn_output_dim': 64,
     },
 
     # --- Transformer Hyperparameters ---
@@ -40,7 +39,7 @@ CONFIG = {
     'n_heads': 4,
     'n_layers': 2,
     'dropout': 0.1,
-    'num_numerical_features': 3,  # cost, time_from_start, time_from_previous
+    'num_numerical_features': 3,
 
     # --- Meta-Learning Parameters ---
     'num_shots_range': (2, 8),
@@ -51,6 +50,7 @@ CONFIG = {
     'lr': 3e-4,
     'epochs': 4,
     'episodes_per_epoch': 200,
+    'episodic_label_shuffle': False, # <-- NEW: Set to True to enable label shuffling augmentation
 
     # --- Test Parameters ---
     'num_test_episodes': 200,
