@@ -59,17 +59,17 @@ CONFIG = {
     'num_numerical_features': 3,
 
     # --- Meta-Learning Parameters ---
-    # These parameters define the meta-learning task structure, not the model size.
-    # Increasing shots/queries makes tasks harder/easier but doesn't change model parameters.
-    'num_shots_range': (2, 8),
+    # User requested change: 1 to 20 shots
+    'num_shots_range': (1, 20),           # Was: (2, 8)
     'num_queries': 10,
-    'num_shots_test': [1, 5, 10],
+    'num_shots_test': [1, 5, 10, 20],   # Added 20 to align with new range
 
     # --- Training Parameters ---
     # 5. A larger model often requires more training (epochs, episodes)
     #    and a smaller, more stable learning rate.
+    # User requested change: Increase epochs
     'lr': 1e-4,                     # Was: 3e-4
-    'epochs': 10,                   # Was: 4
+    'epochs': 15,                   # Was: 4, then 10
     'episodes_per_epoch': 500,      # Was: 200
     'episodic_label_shuffle': True, # Set to True to enable label shuffling augmentation
 
