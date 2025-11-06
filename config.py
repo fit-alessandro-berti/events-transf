@@ -32,32 +32,46 @@ CONFIG = {
     'embedding_strategy': 'learned',
 
     # --- Strategy-Specific Parameters ---
+    # Suggestions to "beef up" the model:
+    # 1. Use a larger, more powerful SentenceTransformer model (e.g., all-mpnet-base-v2).
+    # 2. Increase the corresponding embedding_dim.
     'pretrained_settings': {
-        'sbert_model': 'all-MiniLM-L6-v2',
-        'embedding_dim': 384,
+        'sbert_model': 'all-mpnet-base-v2', # Was: 'all-MiniLM-L6-v2'
+        'embedding_dim': 768,               # Was: 384
     },
+    # 3. Increase the character embedding and CNN dimensions for the 'learned' strategy
+    #    to better match the increased d_model.
     'learned_settings': {
-        'char_embedding_dim': 32,
-        'char_cnn_output_dim': 64,
+        'char_embedding_dim': 64,           # Was: 32
+        'char_cnn_output_dim': 128,         # Was: 64
     },
 
     # --- Transformer Hyperparameters ---
-    'd_model': 128,
-    'n_heads': 4,
-    'n_layers': 2,
-    'dropout': 0.1,
+    # 4. Increase the core model dimensions:
+    #    - d_model: The main embedding size of the transformer. Larger = more capacity.
+    #    - n_heads: Number of attention heads. Must be a divisor of d_model.
+    #    - n_layers: The number of transformer blocks (depth). Deeper = more complex.
+    #    - dropout: Slightly increase dropout to regularize the larger model.
+    'd_model': 256,                 # Was: 128
+    'n_heads': 8,                   # Was: 4 (256 / 8 = 32 dim per head)
+    'n_layers': 6,                  # Was: 2
+    'dropout': 0.15,                # Was: 0.1
     'num_numerical_features': 3,
 
     # --- Meta-Learning Parameters ---
+    # These parameters define the meta-learning task structure, not the model size.
+    # Increasing shots/queries makes tasks harder/easier but doesn't change model parameters.
     'num_shots_range': (2, 8),
     'num_queries': 10,
     'num_shots_test': [1, 5, 10],
 
     # --- Training Parameters ---
-    'lr': 3e-4,
-    'epochs': 4,
-    'episodes_per_epoch': 200,
-    'episodic_label_shuffle': False, # <-- NEW: Set to True to enable label shuffling augmentation
+    # 5. A larger model often requires more training (epochs, episodes)
+    #    and a smaller, more stable learning rate.
+    'lr': 1e-4,                     # Was: 3e-4
+    'epochs': 10,                   # Was: 4
+    'episodes_per_epoch': 500,      # Was: 200
+    'episodic_label_shuffle': True, # Set to True to enable label shuffling augmentation
 
     # --- Test Parameters ---
     'num_test_episodes': 200,
