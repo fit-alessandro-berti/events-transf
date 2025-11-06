@@ -68,4 +68,4 @@ def collate_python_files(
 
 if __name__ == "__main__":
     # Example: collate from current directory and 'components'
-    collate_python_files(directories=(".", "components"))
+    collate_python_files(directories=(".", "components"), exclude_dirs=("util",))
