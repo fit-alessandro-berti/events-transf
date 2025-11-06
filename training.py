@@ -11,6 +11,8 @@ import numpy as np
 
 # --- Import from project files ---
 from torch.optim import lr_scheduler
+# 🔺 Import the new scheduler
+from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR
 from data_generator import XESLogLoader
 
 # Use a try-except block for the optional dependency
@@ -101,7 +103,9 @@ def train(model, training_tasks, loader, config):
     """
     print("🚀 Starting meta-training...")
     optimizer = optim.AdamW(model.parameters(), lr=config['lr'])
-    scheduler = lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.5)
+
+    # 🔺 Use CosineAnnealingLR for a smooth decay over all epochs
+    scheduler = CosineAnnealingLR(optimizer, T_max=config['epochs'], eta_min=1e-6)
 
     checkpoint_dir = './checkpoints'
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -140,7 +144,8 @@ def train(model, training_tasks, loader, config):
                 # Pass the shuffle flag to the episode creator
                 episode = create_episode(
                     task_data_pool, config['num_shots_range'], config['num_queries'],
-                    num_ways_range=(2, 7), shuffle_labels=should_shuffle_labels
+                    # 🔺 Make the task harder: 3-way to 10-way
+                    num_ways_range=(3, 10), shuffle_labels=should_shuffle_labels
                 )
             else:
                 if len(task_data_pool) < config['num_shots_range'][1] + config['num_queries']:
