@@ -22,7 +22,7 @@ CONFIG = {
             'req2receipt': os.path.join(LOG_DIR, '00011_req2receipt.xes.gz'),
         },
         'testing': {
-            'D_unseen': os.path.join(LOG_DIR, '00012_camp2lead.xes.gz')
+            'D_unseen': os.path.join(LOG_DIR, '00013_clos2rep.xes.gz')
         }
     },
 
