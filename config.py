@@ -9,13 +9,20 @@ CONFIG = {
     # --- Data Configuration ---
     'log_paths': {
         'training': {
-            'A': os.path.join(LOG_DIR, '01_running-example.xes.gz'),
-            'B': os.path.join(LOG_DIR, '02_teleclaims.xes.gz'),
-            'C': os.path.join(LOG_DIR, '04_reviewing.xes.gz'),
-            'D': os.path.join(LOG_DIR, '03_repairExample.xes.gz'),
+            'o2c': os.path.join(LOG_DIR, '0001_o2c.xes.gz'),
+            'hire2retire': os.path.join(LOG_DIR, '00002_hire2retire.xes.gz'),
+            'di2re': os.path.join(LOG_DIR, '00003_di2re.xes.gz'),
+            'mak2stock': os.path.join(LOG_DIR, '00004_mak2stock.xes.gz'),
+            'offer2accept': os.path.join(LOG_DIR, '00005_offer2accept.xes.gz'),
+            'quote2order': os.path.join(LOG_DIR, '00006_quote2order.xes.gz'),
+            'opp2quote': os.path.join(LOG_DIR, '00007_opp2quote.xes.gz'),
+            'lead2opp': os.path.join(LOG_DIR, '00008_lead2opp.xes.gz'),
+            'p2p': os.path.join(LOG_DIR, '00009_p2p.xes.gz'),
+            'rid2mit': os.path.join(LOG_DIR, '00010_rid2mit.xes.gz'),
+            'req2receipt': os.path.join(LOG_DIR, '00011_req2receipt.xes.gz'),
         },
         'testing': {
-            'D_unseen': os.path.join(LOG_DIR, '03_repairExample.xes.gz')
+            'D_unseen': os.path.join(LOG_DIR, '00012_camp2lead.xes.gz')
         }
     },
 
