@@ -34,11 +34,15 @@ class PositionalEncoding(nn.Module):
 class EventEncoder(nn.Module):
     """
     Encodes a sequence of event embeddings using a Transformer Encoder and
-    aggregates them with a hybrid CLS + mask-aware attention pooling head.
+    aggregates them with a hybrid CLS + mask-aware Multi-Head Attention (MHA)
+    pooling head.
 
     Update:
-    - Add a learnable scalar gate to mix CLS and attention pooled representation
-      instead of fixed 50/50. This helps classification without changing width/depth.
+    - Replaced simple attention pooling with a more powerful MHA-based pooling.
+    - A learnable 'pool_query' vector attends to the output tokens.
+    - Replaced the simple scalar mix with a concatenation and projection layer
+      to non-linearly combine the CLS token and the pooled token representation.
+      This provides a more expressive and powerful aggregation mechanism.
     """
 
     def __init__(self, d_model, n_heads, n_layers, dropout=0.1):
@@ -50,14 +54,11 @@ class EventEncoder(nn.Module):
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
         nn.init.normal_(self.cls_token, std=0.02)
 
-        # Learnable mix between CLS and pooled features (sigmoid -> [0,1])
-        self.mix_logit = nn.Parameter(torch.tensor(0.0))  # starts ~0.5 after sigmoid
-
-        # Pre-Norm transformer (stable) with modest FF width
+        # Pre-Norm transformer (stable)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=n_heads,
-            dim_feedforward=max(4 * d_model, d_model),
+            dim_feedforward=d_model * 4,  # Standard FFN width
             dropout=dropout,
             batch_first=True,
             activation='gelu',
@@ -65,8 +66,21 @@ class EventEncoder(nn.Module):
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
 
-        # Attention pooling over time (excluding CLS) to produce a robust sequence representation.
-        self.attn_pool = nn.Linear(d_model, 1)
+        # --- New Powerful Aggregation Head ---
+        # 1. A learnable query vector for MHA pooling
+        self.pool_query = nn.Parameter(torch.zeros(1, 1, d_model))
+        nn.init.normal_(self.pool_query, std=0.02)
+
+        # 2. A Multi-Head Attention layer to perform the pooling
+        self.mha_pool = nn.MultiheadAttention(
+            embed_dim=d_model,
+            num_heads=n_heads,
+            dropout=dropout,
+            batch_first=True
+        )
+
+        # 3. A projection layer to combine CLS and Pooled representations
+        self.final_projection = nn.Linear(d_model * 2, d_model)
         self.out_norm = nn.LayerNorm(d_model)
 
     def forward(self, src, src_key_padding_mask=None):
@@ -106,16 +120,22 @@ class EventEncoder(nn.Module):
         if src_key_padding_mask is not None:
             token_mask = src_key_padding_mask[:, 1:]  # (B, T)
 
-        # Mask-aware attention pooling on tokens
-        attn_logits = self.attn_pool(tokens).squeeze(-1)  # (B, T)
-        if token_mask is not None:
-            attn_logits = attn_logits.masked_fill(token_mask, float('-inf'))
+        # --- MHA-based Pooling ---
+        # Use the learnable pool_query to attend to the sequence tokens
+        pool_q = self.pool_query.expand(B, -1, -1)  # (B, 1, D)
+        pooled_out, _ = self.mha_pool(
+            query=pool_q,
+            key=tokens,
+            value=tokens,
+            key_padding_mask=token_mask
+        )
+        pooled = pooled_out.squeeze(1)  # (B, 1, D) -> (B, D)
 
-        attn_weights = torch.softmax(attn_logits, dim=1)  # (B, T)
-        pooled = (attn_weights.unsqueeze(-1) * tokens).sum(dim=1)  # (B, D)
+        # --- Hybrid Aggregation ---
+        # Concatenate and project for a powerful, flexible combination
+        concatenated = torch.cat([cls_out, pooled], dim=-1)  # (B, 2*D)
+        projected = self.final_projection(concatenated)      # (B, D)
 
-        # Learnable hybrid aggregation: mix CLS and pooled
-        w = torch.sigmoid(self.mix_logit)
-        encoded = w * cls_out + (1.0 - w) * pooled
-        encoded = self.out_norm(encoded)
+        # Final normalization
+        encoded = self.out_norm(projected)
         return encoded
