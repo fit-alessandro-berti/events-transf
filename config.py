@@ -1,3 +1,4 @@
+# File: C:\Users\berti\events-transf\config.py
 # config.py
 import os
 
@@ -71,7 +72,7 @@ CONFIG = {
     'lr': 1e-4,                     # Was: 3e-4
     'epochs': 10,                   # Was: 4, then 10
     'episodes_per_epoch': 1000,      # Was: 200
-    'episodic_label_shuffle': False, # Set to True to enable label shuffling augmentation
+    'episodic_label_shuffle': 'mixed', # "no" (False), "yes" (True), or "mixed" (alternates each epoch)
 
     # --- Test Parameters ---
     'num_test_episodes': 200,

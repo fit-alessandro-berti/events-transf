@@ -1,3 +1,4 @@
+# File: C:\Users\berti\events-transf\training.py
 # training.py
 import random
 import torch
@@ -117,16 +118,28 @@ def train(model, training_tasks, loader, config):
         print("❌ Error: No valid training tasks available. Aborting training.")
         return
 
-    # Get the shuffle flag from the config
-    should_shuffle_labels = config.get('episodic_label_shuffle', False)
-    if should_shuffle_labels:
-        print("✅ Episodic Label Shuffle augmentation is ENABLED.")
+    # Get the shuffle strategy string from the config
+    shuffle_strategy = str(config.get('episodic_label_shuffle', 'no')).lower()
+    print(f"✅ Episodic Label Shuffle strategy set to: '{shuffle_strategy}'")
 
     for epoch in range(config['epochs']):
         model.train()
         total_loss = 0.0
 
-        progress_bar = tqdm(range(config['episodes_per_epoch']), desc=f"Epoch {epoch + 1}/{config['epochs']}")
+        # --- NEW: Determine shuffle status for THIS epoch ---
+        should_shuffle_labels = False
+        if shuffle_strategy == 'yes':
+            should_shuffle_labels = True
+        elif shuffle_strategy == 'mixed':
+            should_shuffle_labels = (epoch % 2 == 0)  # Shuffle on even epochs, not on odd
+
+        epoch_desc = f"Epoch {epoch + 1}/{config['epochs']}"
+        if shuffle_strategy != 'no':
+            epoch_desc += f" (Shuffle: {'ON' if should_shuffle_labels else 'OFF'})"
+        # --- END NEW LOGIC ---
+
+        progress_bar = tqdm(range(config['episodes_per_epoch']), desc=epoch_desc)
+
         for _ in progress_bar:
             task_type = random.choice(['classification', 'regression'])
 
@@ -141,7 +154,7 @@ def train(model, training_tasks, loader, config):
             if not task_data_pool: continue
 
             if task_type == 'classification':
-                # Pass the shuffle flag to the episode creator
+                # Pass the dynamically set shuffle flag
                 episode = create_episode(
                     task_data_pool, config['num_shots_range'], config['num_queries'],
                     # 🔺 Make the task harder: 3-way to 10-way
