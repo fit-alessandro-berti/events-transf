@@ -69,7 +69,7 @@ CONFIG = {
     #    and a smaller, more stable learning rate.
     # User requested change: Increase epochs
     'lr': 1e-4,                     # Was: 3e-4
-    'epochs': 20,                   # Was: 4, then 10
+    'epochs': 3,                   # Was: 4, then 10
     'episodes_per_epoch': 500,      # Was: 200
     'episodic_label_shuffle': False, # Set to True to enable label shuffling augmentation
 
