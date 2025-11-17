@@ -132,7 +132,7 @@ def evaluate_retrieval_augmented(model, test_tasks, num_retrieval_k_list, num_te
 
                 # --- CONTAMINATION FIX ---
                 # Find all indices that share the same case ID as the query
-                same_case_indices_np = np.where(all_cases_ids == query_case_id)[0]
+                same_case_indices_np = np.where(all_case_ids == query_case_id)[0]
                 mask_tensor = torch.from_numpy(same_case_indices_np).to(query_embedding.device)
                 # --- END FIX ---
 
