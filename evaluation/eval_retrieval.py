@@ -132,7 +132,7 @@ def evaluate_retrieval_augmented(model, test_tasks, num_retrieval_k_list, num_te
 
                 # --- CONTAMINATION FIX ---
                 # Find all indices that share the same case ID as the query
-                same_case_indices_np = np.where(all_case_ids == query_case_id)[0]
+                same_case_indices_np = np.where(all_cases_ids == query_case_id)[0]
                 mask_tensor = torch.from_numpy(same_case_indices_np).to(query_embedding.device)
                 # --- END FIX ---
 
@@ -169,7 +169,8 @@ def evaluate_retrieval_augmented(model, test_tasks, num_retrieval_k_list, num_te
                         pred_label_idx = torch.argmax(logits, dim=1).item()
 
                         # 🔻 MODIFIED: Get confidence for the predicted class 🔻
-                        pred_confidence = confidence.squeeze()[pred_label_idx].item()
+                        # Index [0, pred_label_idx] to handle [1,C] shape
+                        pred_confidence = confidence[0, pred_label_idx].item()
                         # 🔺 END MODIFIED 🔺
 
                         # Find the *actual* class label (e.g., "Activity C")
@@ -189,10 +190,11 @@ def evaluate_retrieval_augmented(model, test_tasks, num_retrieval_k_list, num_te
                             support_embeddings, support_labels.float(), query_embedding
                         )
                         # 🔺 END MODIFIED 🔺
-                        all_preds.append(prediction.item())
+                        # 🔻 MODIFIED: Index [0] for single-item tensors 🔻
+                        all_preds.append(prediction[0].item())
                         all_true_labels.append(query_label.item())
                         # 🔻 MODIFIED: Store confidence 🔻
-                        all_confidences.append(confidence.item())
+                        all_confidences.append(confidence[0].item())
                         # 🔺 END MODIFIED 🔺
 
             if not all_true_labels: continue
