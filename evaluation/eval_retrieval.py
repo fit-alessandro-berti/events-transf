@@ -8,6 +8,11 @@ from tqdm import tqdm
 
 # --- Import from project files ---
 from time_transf import inverse_transform_time
+# 🔻 NEW IMPORT 🔻
+from utils.retrieval_utils import find_knn_indices
+
+
+# 🔺 END NEW 🔺
 
 
 def _get_all_test_embeddings(model, test_tasks_list, batch_size=64):
@@ -120,21 +125,28 @@ def evaluate_retrieval_augmented(model, test_tasks, num_retrieval_k_list, num_te
                 query_label = all_labels[query_idx]
                 query_case_id = all_case_ids[query_idx]  # <-- Get query case_id
 
+                # 🔻🔻🔻 REFACTORED BLOCK 🔻🔻🔻
                 # --- Find k-NN Support Set ---
-                # Cosine similarity: (1, D) @ (D, N) -> (1, N)
-                sims = query_embedding @ all_embeddings.T
 
                 # --- CONTAMINATION FIX ---
                 # Find all indices that share the same case ID as the query
-                same_case_indices = np.where(all_case_ids == query_case_id)[0]
-
-                # Mask out ALL samples from the same case (including the query itself)
-                same_case_indices_tensor = torch.from_numpy(same_case_indices).to(sims.device)
-                sims[0, same_case_indices_tensor] = -float('inf')
+                same_case_indices_np = np.where(all_case_ids == query_case_id)[0]
+                mask_tensor = torch.from_numpy(same_case_indices_np).to(query_embedding.device)
                 # --- END FIX ---
 
-                # Get top k most similar (now guaranteed to be from different cases)
-                top_k_indices = torch.topk(sims.squeeze(0), k).indices
+                # Use the new helper function
+                # Note: query_embedding and all_embeddings are already normalized
+                top_k_indices = find_knn_indices(
+                    query_embedding,
+                    all_embeddings,
+                    k=k,
+                    indices_to_mask=mask_tensor
+                )
+
+                if top_k_indices.numel() == 0:
+                    continue  # Not enough valid support items found
+
+                # 🔺🔺🔺 END REFACTORED BLOCK 🔺🔺🔺
 
                 support_embeddings = all_embeddings[top_k_indices]  # [k, D]
                 support_labels = all_labels[top_k_indices]  # [k]
@@ -145,6 +157,8 @@ def evaluate_retrieval_augmented(model, test_tasks, num_retrieval_k_list, num_te
                         logits, proto_classes = model.proto_head.forward_classification(
                             support_embeddings, support_labels, query_embedding
                         )
+
+                        if logits is None: continue  # Should not happen if top_k_indices.numel() > 0
 
                         # --- "NO INVALID QUERIES" FIX ---
                         # Get the index of the top logit (e.g., 0, 1, 2...)
