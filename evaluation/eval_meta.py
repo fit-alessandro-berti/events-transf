@@ -25,7 +25,7 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
         if task_type == 'classification':
             class_dict = defaultdict(list)
             # Assumes task_data is (prefix, label) or (prefix, label, case_id)
-            for task_item in task_data:
+            for task_item in test_tasks:
                 seq, label = task_item[0], task_item[1]
                 class_dict[label].append((seq, label))
             class_dict = {c: items for c, items in class_dict.items() if len(items) >= max(num_shots_list) + 1}
@@ -82,7 +82,9 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
                     # 🔺 END MODIFIED 🔺
                 else:
                     all_preds.extend(predictions.view(-1).cpu().tolist())
-                    all_labels.extend(true_labels.view(-1).cpu.tolist())
+                    # 🔻 MODIFIED: Added missing () to .cpu() 🔻
+                    all_labels.extend(true_labels.view(-1).cpu().tolist())
+                    # 🔺 END MODIFIED 🔺
                     # 🔻 MODIFIED: Store regression confidence 🔻
                     all_confidences.extend(confidence.cpu().numpy())
                     # 🔺 END MODIFIED 🔺
