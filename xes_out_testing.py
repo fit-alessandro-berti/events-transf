@@ -20,6 +20,7 @@ from utils.retrieval_utils import find_knn_indices
 warnings.filterwarnings("ignore", category=UserWarning, module='pm4py')
 
 
+# --- 🔻 FUNCTION MODIFIED 🔻 ---
 def get_all_prefix_tasks(log, max_seq_len=10):
     """
     Generates a list of all possible prefix tasks from a log.
@@ -29,6 +30,8 @@ def get_all_prefix_tasks(log, max_seq_len=10):
     - 'cls_label': The ground-truth activity_id of the *next* event.
     - 'reg_label': The ground-truth (transformed) remaining time.
     - 'case_id': The original case ID.
+    - 'actual_next_activity_name': The ground-truth *name* of the next activity.
+    - 'actual_remaining_time_hr': The ground-truth *untransformed* remaining time.
     """
     print("🛠️ Generating all prefix tasks from log...")
     tasks = []
@@ -39,6 +42,7 @@ def get_all_prefix_tasks(log, max_seq_len=10):
 
         case_id = trace[0]['case_id']
 
+        # Iterate from prefix-length 1 up to prefix-length N-1
         for i in range(1, len(trace)):
             prefix = trace[:i]
             if len(prefix) > max_seq_len:
@@ -47,23 +51,34 @@ def get_all_prefix_tasks(log, max_seq_len=10):
             next_event = trace[i]
             last_event_in_prefix = prefix[-1]
 
-            # Ground truth for classification
+            # --- Ground Truth Values ---
+
+            # 1. Classification
             cls_label = next_event.get('activity_id', -100)  # -100 if unseen
+            actual_next_activity_name = next_event.get('activity_name', 'Unknown')
 
-            # Ground truth for regression
+            # 2. Regression
             remaining_time_sec = trace[-1]['timestamp'] - last_event_in_prefix['timestamp']
-            remaining_time_hr = remaining_time_sec / 3600.0
-            reg_label = transform_time(remaining_time_hr)
+            actual_remaining_time_hr = remaining_time_sec / 3600.0
+            if actual_remaining_time_hr < 0:
+                actual_remaining_time_hr = 0.0
+            reg_label = transform_time(actual_remaining_time_hr)
 
+            # --- Store Task ---
             if cls_label != -100:
                 tasks.append({
                     'prefix': prefix,
                     'cls_label': cls_label,
                     'reg_label': reg_label,
-                    'case_id': case_id
+                    'case_id': case_id,
+                    'actual_next_activity_name': actual_next_activity_name,
+                    'actual_remaining_time_hr': actual_remaining_time_hr
                 })
     print(f"✅ Generated {len(tasks)} prefix tasks.")
     return tasks
+
+
+# --- 🔺 END MODIFIED FUNCTION 🔺 ---
 
 
 def compute_all_embeddings(model, all_prefixes, batch_size=64):
@@ -96,7 +111,9 @@ def compute_all_embeddings(model, all_prefixes, batch_size=64):
 
 
 # --- 🔻 FUNCTION MODIFIED 🔻 ---
-def create_xes_trace(prefix_events, new_case_id, rem_time_pred, activity_name_pred):
+def create_xes_trace(prefix_events, new_case_id,
+                     pred_rem_time, pred_activity_name,
+                     actual_rem_time, actual_next_activity):
     """
     Creates a single pm4py Trace object from a prefix and predictions.
     """
@@ -106,31 +123,27 @@ def create_xes_trace(prefix_events, new_case_id, rem_time_pred, activity_name_pr
 
     # 1. Add all prefix events
     for event_idx, event_data in enumerate(prefix_events):
-        # We must deepcopy to avoid modifying the original log data
         new_event_data = copy.deepcopy(event_data)
 
         new_event = pm4py.objects.log.obj.Event()
-
-        # --- FIX ---
-        # The loader's transform methods produce 'activity_name' and 'resource_name'
-        # This was trying to access 'activity' and 'resource', causing the KeyError.
         new_event['concept:name'] = new_event_data['activity_name']
         new_event['org:resource'] = new_event_data.get('resource_name', 'Unknown')
-        # --- END FIX ---
-
         new_event['time:timestamp'] = datetime.fromtimestamp(new_event_data['timestamp'])
 
-        # Add other attributes from the original event
         for key, value in new_event_data.items():
-            # Exclude all keys we've manually handled or that are not for XES
             if key not in ['activity_name', 'resource_name', 'timestamp', 'concept:name', 'org:resource',
                            'time:timestamp',
                            'activity', 'resource', 'activity_embedding', 'resource_embedding']:
                 new_event[key] = value
 
-        # 2. Annotate the *last* event with remaining time
+        # 2. Annotate the *last* event with all requested attributes
         if event_idx == len(prefix_events) - 1:
-            new_event['remainingTime'] = float(rem_time_pred)
+            # --- Renamed per request ---
+            new_event['predictedRemainingTime'] = float(pred_rem_time)
+            # --- Added per request ---
+            new_event['actualRemainingTime'] = float(actual_rem_time)
+            new_event['actualNextActivity'] = str(actual_next_activity)
+
             last_event_timestamp = new_event['time:timestamp']
 
         new_trace.append(new_event)
@@ -138,9 +151,8 @@ def create_xes_trace(prefix_events, new_case_id, rem_time_pred, activity_name_pr
     # 3. Add the *new* predicted event
     if last_event_timestamp is not None:
         pred_event = pm4py.objects.log.obj.Event()
-        pred_event['concept:name'] = activity_name_pred
+        pred_event['concept:name'] = pred_activity_name
         pred_event['org:resource'] = 'PREDICTED'
-        # Add a small delta (e.g., 1 second) to the last event's timestamp
         pred_event['time:timestamp'] = last_event_timestamp + timedelta(seconds=1)
         pred_event['lifecycle:transition'] = 'complete'
         pred_event['predicted'] = True
@@ -154,14 +166,13 @@ def create_xes_trace(prefix_events, new_case_id, rem_time_pred, activity_name_pr
 
 if __name__ == '__main__':
 
-    # --- Argument Parsing (copied from testing.py) ---
+    # --- Argument Parsing ---
     parser = argparse.ArgumentParser(description="Run prediction script to generate a new XES log.")
 
     default_config = CONFIG
     available_test_logs = list(default_config['log_paths']['testing'].keys())
     default_test_log = available_test_logs[0] if available_test_logs else None
 
-    # --- NEW Required Argument ---
     parser.add_argument(
         '--output_file',
         type=str,
@@ -194,7 +205,6 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    # --- CRITICAL: This script ONLY works in retrieval mode ---
     if args.test_mode != 'retrieval_augmented':
         print(f"❌ Error: This script requires 'retrieval_augmented' mode to build support sets for inference.")
         print("Please run with --test_mode retrieval_augmented")
@@ -218,16 +228,12 @@ if __name__ == '__main__':
     loader = init_loader(CONFIG)
     loader.load_training_artifacts(artifacts_path)
 
-    # Get the ID-to-Name mapping for activities
-    # Assumes activity_to_id index maps to training_activity_names list
     id_to_activity_name = loader.training_activity_names
 
     model = create_model(CONFIG, loader, device)
     load_model_weights(model, checkpoint_dir, device)
     model.eval()
 
-    # Get the specific proto_head we'll use for predictions
-    # (For MoE, we use the avg embedding space but Expert 0's head)
     proto_head_to_use = model.experts[0].proto_head
 
     log_path = CONFIG['log_paths']['testing'].get(args.test_log_name)
@@ -261,6 +267,11 @@ if __name__ == '__main__':
         query_case_id = task['case_id']
         query_prefix = task['prefix']
 
+        # --- 🔻 Get ground truth values from task 🔻 ---
+        actual_rem_time = task['actual_remaining_time_hr']
+        actual_next_activity = task['actual_next_activity_name']
+        # --- 🔺 END 🔺 ---
+
         # --- Find k-NN Support Set (excluding same-case) ---
         same_case_indices_np = np.where(all_case_ids_array == query_case_id)[0]
         mask_tensor = torch.from_numpy(same_case_indices_np).to(device)
@@ -274,49 +285,53 @@ if __name__ == '__main__':
 
         if support_indices.numel() == 0:
             # Cannot predict without a support set
-            continue
-
-        # --- Prediction 1: Next Activity (Classification) ---
-        cls_support_embeddings = all_embeddings_norm[support_indices]
-        cls_support_labels = all_cls_labels[support_indices]
-
-        with torch.no_grad():
-            logits, proto_classes, _ = proto_head_to_use.forward_classification(
-                cls_support_embeddings, cls_support_labels, query_embedding_norm
-            )
-
-        pred_label_idx = torch.argmax(logits, dim=1).item()
-        predicted_activity_id = proto_classes[pred_label_idx].item()
-
-        if 0 <= predicted_activity_id < len(id_to_activity_name):
-            # Map the predicted ID back to its string name
-            predicted_activity_name = id_to_activity_name[predicted_activity_id]
-        else:
-            # Fallback for an unexpected ID
-            predicted_activity_name = "Unknown (Pred. ID)"
-
-        # --- Prediction 2: Remaining Time (Regression) ---
-        reg_support_embeddings = all_embeddings_norm[support_indices]
-        reg_support_labels = all_reg_labels[support_indices]
-
-        with torch.no_grad():
-            prediction, _ = proto_head_to_use.forward_regression(
-                reg_support_embeddings, reg_support_labels, query_embedding_norm
-            )
-
-        predicted_reg_value = prediction[0].item()
-        predicted_rem_time_hours = inverse_transform_time(predicted_reg_value)
-        if predicted_rem_time_hours < 0:
+            predicted_activity_name = "Error (No Support)"
             predicted_rem_time_hours = 0.0
+        else:
+            # --- Prediction 1: Next Activity (Classification) ---
+            cls_support_embeddings = all_embeddings_norm[support_indices]
+            cls_support_labels = all_cls_labels[support_indices]
+
+            with torch.no_grad():
+                logits, proto_classes, _ = proto_head_to_use.forward_classification(
+                    cls_support_embeddings, cls_support_labels, query_embedding_norm
+                )
+
+            pred_label_idx = torch.argmax(logits, dim=1).item()
+            predicted_activity_id = proto_classes[pred_label_idx].item()
+
+            if 0 <= predicted_activity_id < len(id_to_activity_name):
+                predicted_activity_name = id_to_activity_name[predicted_activity_id]
+            else:
+                predicted_activity_name = "Unknown (Pred. ID)"
+
+            # --- Prediction 2: Remaining Time (Regression) ---
+            reg_support_embeddings = all_embeddings_norm[support_indices]
+            reg_support_labels = all_reg_labels[support_indices]
+
+            with torch.no_grad():
+                prediction, _ = proto_head_to_use.forward_regression(
+                    reg_support_embeddings, reg_support_labels, query_embedding_norm
+                )
+
+            predicted_reg_value = prediction[0].item()
+            predicted_rem_time_hours = inverse_transform_time(predicted_reg_value)
+            if predicted_rem_time_hours < 0:
+                predicted_rem_time_hours = 0.0
 
         # --- 4. Create and append the new XES trace ---
         new_case_id = f"{query_case_id}@{len(query_prefix)}"
+
+        # --- 🔻 Pass new values to function 🔻 ---
         new_trace = create_xes_trace(
             query_prefix,
             new_case_id,
             predicted_rem_time_hours,
-            predicted_activity_name
+            predicted_activity_name,
+            actual_rem_time,
+            actual_next_activity
         )
+        # --- 🔺 END 🔺 ---
         output_log.append(new_trace)
 
     # --- 5. Save the final XES log ---
