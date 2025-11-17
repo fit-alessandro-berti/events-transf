@@ -4,16 +4,21 @@ import torch
 import torch.optim as optim
 import torch.nn.functional as F
 from tqdm import tqdm
-from collections import defaultdict
+# 🔻🔻🔻 MODIFIED IMPORTS 🔻🔻🔻
+# from collections import defaultdict # No longer needed here
 import os
 import itertools
 import numpy as np
+# 🔺🔺🔺🔺🔺🔺🔺🔺🔺🔺🔺🔺🔺🔺🔺
 
 # --- Import from project files ---
 from torch.optim import lr_scheduler
 # 🔺 Import the new scheduler
 from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR
 from data_generator import XESLogLoader
+# 🔻🔻🔻 NEW IMPORT 🔻🔻🔻
+from utils.data_utils import create_episode
+# 🔺🔺🔺🔺🔺🔺🔺🔺🔺🔺
 
 # Use a try-except block for the optional dependency
 try:
@@ -58,49 +63,10 @@ def evaluate_embedding_quality(model, loader: XESLogLoader):
     print("-" * 30)
 
 
-def create_episode(task_pool, num_shots_range, num_queries_per_class, num_ways_range=(2, 5), shuffle_labels=False):
-    """
-    Creates a single meta-learning episode. Can optionally shuffle labels
-    within the episode to force in-context learning.
-    """
-    class_dict = defaultdict(list)
-
-    # --- FIX ---
-    # task_pool now contains (seq, label, case_id) tuples.
-    # We unpack all three but only use seq and label for training.
-    for seq, label, case_id in task_pool:
-        # --- END FIX ---
-        class_dict[label].append((seq, label))
-
-    num_ways = random.randint(num_ways_range[0], num_ways_range[1])
-    num_shots = random.randint(num_shots_range[0], num_shots_range[1])
-    available_classes = [c for c, items in class_dict.items() if len(items) >= num_shots + num_queries_per_class]
-    if len(available_classes) < num_ways: return None
-    episode_classes = random.sample(available_classes, num_ways)
-
-    # --- NEW: Episodic Label Shuffle Logic ---
-    label_map = {}
-    if shuffle_labels:
-        shuffled_classes = random.sample(episode_classes, len(episode_classes))
-        label_map = {original: shuffled for original, shuffled in zip(episode_classes, shuffled_classes)}
-    # If not shuffling, the map will be empty.
-
-    support_set, query_set = [], []
-    for cls in episode_classes:
-        # Use the shuffled label if the map exists, otherwise use the original
-        mapped_label = label_map.get(cls, cls)
-
-        samples = random.sample(class_dict[cls], num_shots + num_queries_per_class)
-
-        # Append samples with the potentially shuffled label
-        for s in samples[:num_shots]:
-            support_set.append((s[0], mapped_label))  # s[0] is the sequence
-        for s in samples[num_shots:]:
-            query_set.append((s[0], mapped_label))
-
-    random.shuffle(support_set)
-    random.shuffle(query_set)
-    return support_set, query_set
+# 🔻🔻🔻
+# REMOVED create_episode function.
+# It has been moved to utils/data_utils.py
+# 🔺🔺🔺
 
 
 def train(model, training_tasks, loader, config):

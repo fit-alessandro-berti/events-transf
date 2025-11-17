@@ -5,8 +5,12 @@ import os
 
 # --- Import from project files ---
 from config import CONFIG
-from data_generator import XESLogLoader, get_task_data
-from components.meta_learner import MetaLearner
+# 🔻🔻🔻 MODIFIED IMPORTS 🔻🔻🔻
+# from data_generator import XESLogLoader, get_task_data # No longer used directly
+# from components.meta_learner import MetaLearner # No longer used directly
+from utils.data_utils import get_task_data
+from utils.model_utils import init_loader, create_model
+# 🔺🔺🔺🔺🔺🔺🔺🔺🔺🔺🔺🔺🔺🔺🔺
 from training import train
 
 def main():
@@ -24,7 +28,10 @@ def main():
 
     # --- 1. Data Preparation ---
     print("--- Phase 1: Preparing Training Data ---")
-    loader = XESLogLoader(strategy=strategy, sbert_model_name=CONFIG['pretrained_settings']['sbert_model'])
+    # 🔻🔻🔻 MODIFIED 🔻🔻🔻
+    # loader = XESLogLoader(strategy=strategy, sbert_model_name=CONFIG['pretrained_settings']['sbert_model'])
+    loader = init_loader(CONFIG)
+    # 🔺🔺🔺🔺🔺🔺🔺🔺🔺🔺
     loader.fit(CONFIG['log_paths']['training'])
     loader.save_training_artifacts(artifacts_path)
     training_logs = loader.transform(CONFIG['log_paths']['training'])
@@ -37,24 +44,10 @@ def main():
 
     # --- 3. Model Initialization ---
     print("\n--- Phase 3: Initializing Model ---")
-    if strategy == 'pretrained':
-        model_params = {'embedding_dim': CONFIG['pretrained_settings']['embedding_dim']}
-    else: # learned
-        model_params = {
-            'char_vocab_size': len(loader.char_to_id),
-            'char_embedding_dim': CONFIG['learned_settings']['char_embedding_dim'],
-            'char_cnn_output_dim': CONFIG['learned_settings']['char_cnn_output_dim'],
-        }
-
-    model = MetaLearner(
-        strategy=strategy, num_feat_dim=CONFIG['num_numerical_features'],
-        d_model=CONFIG['d_model'], n_heads=CONFIG['n_heads'],
-        n_layers=CONFIG['n_layers'], dropout=CONFIG['dropout'], **model_params
-    ).to(device)
-
-    # Pass the character vocabulary to the model
-    if strategy == 'learned':
-        model.set_char_vocab(loader.char_to_id)
+    # 🔻🔻🔻 MODIFIED 🔻🔻🔻
+    # (Replaced all model init logic with the helper function)
+    model = create_model(CONFIG, loader, device)
+    # 🔺🔺🔺🔺🔺🔺🔺🔺🔺🔺
 
     print(f"Model has {sum(p.numel() for p in model.parameters() if p.requires_grad):,} trainable parameters.")
 

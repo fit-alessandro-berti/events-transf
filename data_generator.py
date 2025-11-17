@@ -11,7 +11,7 @@ from scipy.optimize import linear_sum_assignment
 
 # --- Import from project files ---
 from config import CONFIG
-from time_transf import transform_time
+# 🔻 Removed: from time_transf import transform_time (no longer needed here)
 
 
 class XESLogLoader:
@@ -210,31 +210,3 @@ class XESLogLoader:
         elif self.strategy == 'learned':
             self.char_to_id = artifacts['char_to_id']
         print(f"✅ Training artifacts loaded successfully from {path}")
-
-
-def get_task_data(log, task_type, max_seq_len=10):
-    tasks = []
-    if not log: return tasks
-    for trace in log:
-        if len(trace) < 3: continue
-
-        # --- FIX: Get the case_id for the whole trace ---
-        # All events in a trace share the same case_id
-        case_id = trace[0]['case_id']
-
-        for i in range(1, len(trace) - 1):
-            prefix = trace[:i + 1]
-            if len(prefix) > max_seq_len: prefix = prefix[-max_seq_len:]
-
-            # The activity_id can now be None if get() fails, so we check for that
-            next_event_activity_id = trace[i + 1]['activity_id']
-
-            if task_type == 'classification':
-                if next_event_activity_id is not None:
-                    # --- FIX: Append (prefix, label, case_id) ---
-                    tasks.append((prefix, next_event_activity_id, case_id))
-            elif task_type == 'regression':
-                remaining_time = (trace[-1]['timestamp'] - prefix[-1]['timestamp']) / 3600.0
-                # --- FIX: Append (prefix, label, case_id) ---
-                tasks.append((prefix, transform_time(remaining_time), case_id))
-    return tasks
