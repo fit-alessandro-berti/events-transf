@@ -77,7 +77,7 @@ class MetaLearner(nn.Module):
         # (omitted for brevity - this function is unchanged)
         support_seqs, query_seqs = [s[0] for s in support_set], [q[0] for q in query_set]
         all_seqs = support_seqs + query_seqs
-        if not all_seqs: return None, None
+        if not all_seqs: return None, None, None
         all_encoded = self._process_batch(all_seqs)
         support_features = all_encoded[:len(support_seqs)]
         query_features = all_encoded[len(support_seqs):]
@@ -85,14 +85,18 @@ class MetaLearner(nn.Module):
         if task_type == 'classification':
             support_labels = torch.LongTensor([s[1] for s in support_set]).to(device)
             query_labels = torch.LongTensor([q[1] for q in query_set]).to(device)
-            predictions, proto_classes = self.proto_head.forward_classification(support_features, support_labels, query_features)
-            if predictions is None: return None, None
+            # 🔻 MODIFIED: Unpack confidence 🔻
+            predictions, proto_classes, confidence = self.proto_head.forward_classification(support_features, support_labels, query_features)
+            if predictions is None: return None, None, None
             label_map = {orig_label.item(): new_label for new_label, orig_label in enumerate(proto_classes)}
             mapped_labels = torch.tensor([label_map.get(l.item(), -100) for l in query_labels], device=device, dtype=torch.long)
-            return predictions, mapped_labels
+            return predictions, mapped_labels, confidence
+            # 🔺 END MODIFIED 🔺
         elif task_type == 'regression':
             support_labels = torch.as_tensor([s[1] for s in support_set], dtype=torch.float32, device=device)
             query_labels = torch.as_tensor([q[1] for q in query_set], dtype=torch.float32, device=device)
-            predictions = self.proto_head.forward_regression(support_features, support_labels, query_features)
-            return predictions, query_labels
+            # 🔻 MODIFIED: Unpack confidence 🔻
+            predictions, confidence = self.proto_head.forward_regression(support_features, support_labels, query_features)
+            return predictions, query_labels, confidence
+            # 🔺 END MODIFIED 🔺
         else: raise ValueError(f"Unknown task type: {task_type}")

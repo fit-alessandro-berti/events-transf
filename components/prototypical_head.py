@@ -19,6 +19,8 @@ class PrototypicalHead(nn.Module):
       over-sharp logits early (helps classification stability with smoothing).
     - Adaptive prototype shrinkage by support count: shrink more for 1-shot,
       less for 5/10-shot. Keeps prototypes discriminative when data is richer.
+    - 🔻 NEW: Returns confidence scores for both classification (softmax)
+      and regression (max kernel weight).
     """
 
     def __init__(self, init_logit_scale: float = 5.0):
@@ -32,9 +34,14 @@ class PrototypicalHead(nn.Module):
         """
         Calculates logits for the query samples using cosine-similarity
         prototypes built from support features (with adaptive shrinkage).
+
+        Returns:
+            logits (torch.Tensor): Raw logits for each class.
+            unique_classes (torch.Tensor): The original labels for the classes.
+            confidence (torch.Tensor): Softmax probabilities (confidence).
         """
         if support_features.numel() == 0:
-            return None, None
+            return None, None, None
 
         # Normalize features to use cosine similarity, which is often more stable
         support_features = _l2_normalize(support_features)
@@ -66,14 +73,23 @@ class PrototypicalHead(nn.Module):
         scale = self.logit_scale.clamp(1.0, 100.0)
         logits = (query_features @ prototypes.t()) * scale
 
-        return logits, unique_classes
+        # 🔻 MODIFIED: Return confidence (softmax) 🔻
+        confidence = F.softmax(logits, dim=-1)
+        return logits, unique_classes, confidence
+        # 🔺 END MODIFIED 🔺
 
     def forward_regression(self, support_features, support_labels, query_features, eps: float = 1e-6):
         """
         Simplified and robust kernel regression with an RBF-like weighting via softmax.
+
+        Returns:
+            prediction (torch.Tensor): The weighted-average prediction.
+            confidence (torch.Tensor): The max weight used in the average (a measure
+                                       of reliance on a single support point).
         """
         if support_features.numel() == 0 or query_features.numel() == 0:
-            return torch.zeros(query_features.size(0), device=query_features.device)
+            device = query_features.device
+            return torch.zeros(query_features.size(0), device=device), torch.zeros(query_features.size(0), device=device)
 
         # L2 normalization often helps kernel methods by focusing on direction over magnitude
         support_features_norm = _l2_normalize(support_features)
@@ -93,9 +109,12 @@ class PrototypicalHead(nn.Module):
         gamma = 1.0 / (median_dist + eps)
 
         # Calculate kernel weights using softmax, ensures weights sum to 1. weights = exp(-gamma * dist^2)
-        weights = F.softmax(-gamma * distances_sq, dim=1)
+        weights = F.softmax(-gamma * distances_sq, dim=1) # (N_query, N_support)
 
         # Prediction is the weighted average of the support labels
         prediction = weights @ support_labels.view(-1)
 
-        return prediction
+        # 🔻 MODIFIED: Calculate confidence as the max weight 🔻
+        confidence = torch.max(weights, dim=1).values
+        return prediction, confidence
+        # 🔺 END MODIFIED 🔺

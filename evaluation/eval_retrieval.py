@@ -118,7 +118,9 @@ def evaluate_retrieval_augmented(model, test_tasks, num_retrieval_k_list, num_te
                 print(f"Skipping [k={k}]: k is larger than total samples.")
                 continue
 
-            all_preds, all_true_labels = [], []
+            # 🔻 MODIFIED: Store preds and confidences 🔻
+            all_preds, all_true_labels, all_confidences = [], [], []
+            # 🔺 END MODIFIED 🔺
 
             for query_idx in query_indices:
                 query_embedding = all_embeddings[query_idx:query_idx + 1]  # [1, D]
@@ -154,9 +156,11 @@ def evaluate_retrieval_augmented(model, test_tasks, num_retrieval_k_list, num_te
                 # --- Get Prediction ---
                 with torch.no_grad():
                     if task_type == 'classification':
-                        logits, proto_classes = model.proto_head.forward_classification(
+                        # 🔻 MODIFIED: Unpack confidence 🔻
+                        logits, proto_classes, confidence = model.proto_head.forward_classification(
                             support_embeddings, support_labels, query_embedding
                         )
+                        # 🔺 END MODIFIED 🔺
 
                         if logits is None: continue  # Should not happen if top_k_indices.numel() > 0
 
@@ -164,31 +168,51 @@ def evaluate_retrieval_augmented(model, test_tasks, num_retrieval_k_list, num_te
                         # Get the index of the top logit (e.g., 0, 1, 2...)
                         pred_label_idx = torch.argmax(logits, dim=1).item()
 
+                        # 🔻 MODIFIED: Get confidence for the predicted class 🔻
+                        pred_confidence = confidence.squeeze()[pred_label_idx].item()
+                        # 🔺 END MODIFIED 🔺
+
                         # Find the *actual* class label (e.g., "Activity C")
                         # that corresponds to this index
                         predicted_class_label = proto_classes[pred_label_idx].item()
 
                         all_preds.append(predicted_class_label)
                         all_true_labels.append(query_label.item())
+                        # 🔻 MODIFIED: Store confidence 🔻
+                        all_confidences.append(pred_confidence)
+                        # 🔺 END MODIFIED 🔺
                         # --- END FIX ---
 
                     else:  # Regression
-                        prediction = model.proto_head.forward_regression(
+                        # 🔻 MODIFIED: Unpack confidence 🔻
+                        prediction, confidence = model.proto_head.forward_regression(
                             support_embeddings, support_labels.float(), query_embedding
                         )
+                        # 🔺 END MODIFIED 🔺
                         all_preds.append(prediction.item())
                         all_true_labels.append(query_label.item())
+                        # 🔻 MODIFIED: Store confidence 🔻
+                        all_confidences.append(confidence.item())
+                        # 🔺 END MODIFIED 🔺
 
             if not all_true_labels: continue
 
             # --- 3. Report Metrics ---
             if task_type == 'classification':
-                # No need to filter for -100 anymore
+                # 🔻 MODIFIED: Report confidence 🔻
+                avg_conf = np.mean(all_confidences)
                 print(
-                    f"[{k}-NN] Retrieval Accuracy: {accuracy_score(all_true_labels, all_preds):.4f} (on {len(all_true_labels)} queries)")
+                    f"[{k}-NN] Retrieval Accuracy: {accuracy_score(all_true_labels, all_preds):.4f} | Avg. Confidence: {avg_conf:.4f} (on {len(all_true_labels)} queries)")
+                # 🔺 END MODIFIED 🔺
             else:
-                preds = inverse_transform_time(np.array(all_preds));
+                # 🔻 MODIFIED: Report confidence 🔻
+                preds_np = np.array(all_preds)
+                labels_np = np.array(all_true_labels)
+                avg_conf = np.mean(all_confidences)
+
+                preds = inverse_transform_time(preds_np);
                 preds[preds < 0] = 0
-                labels = inverse_transform_time(np.array(all_true_labels))
+                labels = inverse_transform_time(labels_np)
                 print(
-                    f"[{k}-NN] Retrieval MAE: {mean_absolute_error(labels, preds):.4f} | R-squared: {r2_score(labels, preds):.4f}")
+                    f"[{k}-NN] Retrieval MAE: {mean_absolute_error(labels, preds):.4f} | R-squared: {r2_score(labels, preds):.4f} | Avg. Confidence: {avg_conf:.4f}")
+                # 🔺 END MODIFIED 🔺

@@ -90,9 +90,11 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
         # 5. Calculate Loss using the head
         if task_type == 'classification':
             support_labels_tensor = torch.LongTensor(support_labels_list).to(device)
-            logits, proto_classes = model.proto_head.forward_classification(
+            # 🔻 MODIFIED: Unpack confidence (even if unused) 🔻
+            logits, proto_classes, _ = model.proto_head.forward_classification(
                 support_embeddings, support_labels_tensor, query_embedding
             )
+            # 🔺 END MODIFIED 🔺
             if logits is None: continue
 
             label_map = {orig.item(): new for new, orig in enumerate(proto_classes)}
@@ -106,9 +108,11 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
         else:  # Regression
             support_labels_tensor = torch.as_tensor(support_labels_list, dtype=torch.float32, device=device)
             query_label_tensor = torch.as_tensor([query_label], dtype=torch.float32, device=device)
-            prediction = model.proto_head.forward_regression(
+            # 🔻 MODIFIED: Unpack confidence (even if unused) 🔻
+            prediction, _ = model.proto_head.forward_regression(
                 support_embeddings, support_labels_tensor, query_embedding
             )
+            # 🔺 END MODIFIED 🔺
             loss = F.huber_loss(prediction.squeeze(), query_label_tensor.squeeze())
 
         if not torch.isnan(loss):

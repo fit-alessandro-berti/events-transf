@@ -37,7 +37,9 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
             print(f"Running classification test as a {N_WAYS_TEST}-way task.")
 
         for k in num_shots_list:
-            all_preds, all_labels = [], []
+            # 🔻 MODIFIED: Added all_confidences 🔻
+            all_preds, all_labels, all_confidences = [], [], []
+            # 🔺 END MODIFIED 🔺
 
             # Re-build class_dict for sampling (to handle regression case)
             if task_type == 'classification':
@@ -68,14 +70,22 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
 
                 if not support_set or not query_set: continue
                 with torch.no_grad():
-                    predictions, true_labels = model(support_set, query_set, task_type)
+                    # 🔻 MODIFIED: Unpack confidence 🔻
+                    predictions, true_labels, confidence = model(support_set, query_set, task_type)
+                    # 🔺 END MODIFIED 🔺
                 if predictions is None or true_labels is None or torch.all(true_labels == -100): continue
                 if task_type == 'classification':
                     all_preds.extend(torch.argmax(predictions, dim=1).cpu().numpy())
                     all_labels.extend(true_labels.cpu().numpy())
+                    # 🔻 MODIFIED: Store max confidence for the predicted class 🔻
+                    all_confidences.extend(torch.max(confidence, dim=1).values.cpu().numpy())
+                    # 🔺 END MODIFIED 🔺
                 else:
                     all_preds.extend(predictions.view(-1).cpu().tolist())
-                    all_labels.extend(true_labels.view(-1).cpu().tolist())
+                    all_labels.extend(true_labels.view(-1).cpu.tolist())
+                    # 🔻 MODIFIED: Store regression confidence 🔻
+                    all_confidences.extend(confidence.cpu().numpy())
+                    # 🔺 END MODIFIED 🔺
             if not all_labels: continue
             if task_type == 'classification':
                 # Filter out invalid -100 labels
@@ -83,11 +93,18 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
                 if not valid_indices: continue
                 valid_preds = [all_preds[i] for i in valid_indices]
                 valid_labels = [all_labels[i] for i in valid_indices]
+                # 🔻 MODIFIED: Filter and report confidence 🔻
+                valid_confidences = [all_confidences[i] for i in valid_indices]
                 if not valid_labels: continue
-                print(f"[{k}-shot] Accuracy: {accuracy_score(valid_labels, valid_preds):.4f}")
+                avg_conf = np.mean(valid_confidences)
+                print(f"[{k}-shot] Accuracy: {accuracy_score(valid_labels, valid_preds):.4f} | Avg. Confidence: {avg_conf:.4f}")
+                # 🔺 END MODIFIED 🔺
             else:
                 preds = inverse_transform_time(np.array(all_preds));
                 preds[preds < 0] = 0
                 labels = inverse_transform_time(np.array(all_labels))
+                # 🔻 MODIFIED: Report confidence 🔻
+                avg_conf = np.mean(all_confidences)
                 print(
-                    f"[{k}-shot] MAE: {mean_absolute_error(labels, preds):.4f} | R-squared: {r2_score(labels, preds):.4f}")
+                    f"[{k}-shot] MAE: {mean_absolute_error(labels, preds):.4f} | R-squared: {r2_score(labels, preds):.4f} | Avg. Confidence: {avg_conf:.4f}")
+                # 🔺 END MODIFIED 🔺

@@ -38,7 +38,9 @@ def run_episodic_step(model, task_data_pool, task_type, config, should_shuffle_l
         return None, progress_bar_task
 
     support_set, query_set = episode
-    predictions, true_labels = model(support_set, query_set, task_type)
+    # 🔻 MODIFIED: Unpack confidence (even if unused) 🔻
+    predictions, true_labels, _ = model(support_set, query_set, task_type)
+    # 🔺 END MODIFIED 🔺
 
     if predictions is None:
         return None, progress_bar_task
