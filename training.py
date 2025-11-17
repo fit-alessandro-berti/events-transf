@@ -1,5 +1,4 @@
-# File: C:\Users\berti\events-transf\training.py
-# training.py
+# File: training.py
 import random
 import torch
 import torch.optim as optim
@@ -65,8 +64,14 @@ def create_episode(task_pool, num_shots_range, num_queries_per_class, num_ways_r
     within the episode to force in-context learning.
     """
     class_dict = defaultdict(list)
-    for seq, label in task_pool:
+
+    # --- FIX ---
+    # task_pool now contains (seq, label, case_id) tuples.
+    # We unpack all three but only use seq and label for training.
+    for seq, label, case_id in task_pool:
+        # --- END FIX ---
         class_dict[label].append((seq, label))
+
     num_ways = random.randint(num_ways_range[0], num_ways_range[1])
     num_shots = random.randint(num_shots_range[0], num_shots_range[1])
     available_classes = [c for c, items in class_dict.items() if len(items) >= num_shots + num_queries_per_class]
@@ -166,8 +171,18 @@ def train(model, training_tasks, loader, config):
                 else:
                     random.shuffle(task_data_pool)
                     num_shots = random.randint(config['num_shots_range'][0], config['num_shots_range'][1])
-                    support_set = task_data_pool[:num_shots]
-                    query_set = task_data_pool[num_shots: num_shots + config['num_queries']]
+
+                    # --- FIX ---
+                    # task_data_pool contains (seq, label, case_id) tuples.
+                    # We must select the raw tuples, then re-format them to
+                    # (seq, label) tuples for the model's forward pass.
+                    support_set_raw = task_data_pool[:num_shots]
+                    query_set_raw = task_data_pool[num_shots: num_shots + config['num_queries']]
+
+                    support_set = [(s[0], s[1]) for s in support_set_raw]
+                    query_set = [(q[0], q[1]) for q in query_set_raw]
+                    # --- END FIX ---
+
                     episode = (support_set, query_set)
 
             if episode is None or not episode[0] or not episode[1]: continue
