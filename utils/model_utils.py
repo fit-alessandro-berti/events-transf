@@ -6,7 +6,12 @@ import re
 # --- Import from project files ---
 from config import CONFIG
 from data_generator import XESLogLoader
+# --- 🔻 MODIFIED IMPORTS 🔻 ---
 from components.meta_learner import MetaLearner
+from components.moe_model import MoEModel  # Import the new MoE wrapper
+
+
+# --- 🔺 END MODIFIED 🔺 ---
 
 
 def init_loader(config):
@@ -19,9 +24,15 @@ def init_loader(config):
 
 def create_model(config, loader, device):
     """
-    Initializes the MetaLearner model based on the config and loader.
+    Initializes the MoEModel (which wraps MetaLearner(s))
+    based on the config and loader.
     """
     strategy = config['embedding_strategy']
+
+    # --- 🔻 MoE Config 🔻 ---
+    moe_config = config.get('moe_settings', {})
+    num_experts = moe_config.get('num_experts', 1)
+    # --- 🔺 End MoE Config 🔺 ---
 
     if strategy == 'pretrained':
         model_params = {'embedding_dim': config['pretrained_settings']['embedding_dim']}
@@ -35,13 +46,22 @@ def create_model(config, loader, device):
             'char_cnn_output_dim': config['learned_settings']['char_cnn_output_dim'],
         }
 
-    model = MetaLearner(
-        strategy=strategy, num_feat_dim=config['num_numerical_features'],
-        d_model=config['d_model'], n_heads=config['n_heads'],
-        n_layers=config['n_layers'], dropout=config['dropout'], **model_params
+    # --- 🔻 MODIFIED: Instantiate MoEModel 🔻 ---
+    # This will create MetaLearner(s) internally
+    model = MoEModel(
+        num_experts=num_experts,
+        strategy=strategy,
+        num_feat_dim=config['num_numerical_features'],
+        d_model=config['d_model'],
+        n_heads=config['n_heads'],
+        n_layers=config['n_layers'],
+        dropout=config['dropout'],
+        **model_params
     ).to(device)
+    # --- 🔺 END MODIFIED 🔺 ---
 
     # Pass the character vocabulary to the model
+    # The MoEModel will pass it down to all its experts
     if strategy == 'learned':
         model.set_char_vocab(loader.char_to_id)
 

@@ -1,5 +1,4 @@
 # File: config.py
-# config.py
 import os
 
 # Define the base directory for logs
@@ -26,6 +25,14 @@ CONFIG = {
             'D_unseen': os.path.join(LOG_DIR, '00013_clos2rep.xes.gz')
         }
     },
+
+    # --- 🔻 NEW: Mixture of Experts (MoE) Settings 🔻 ---
+    'moe_settings': {
+        # Set to 1 to run as a standard (non-MoE) model.
+        # Set > 1 to enable the MoE architecture.
+        'num_experts': 4
+    },
+    # --- 🔺 END NEW 🔺 ---
 
     # --- Core Model Strategy ---
     # ... (embedding_strategy unchanged) ...
