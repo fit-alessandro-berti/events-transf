@@ -95,6 +95,7 @@ def compute_all_embeddings(model, all_prefixes, batch_size=64):
     return all_embeddings_norm
 
 
+# --- 🔻 FUNCTION MODIFIED 🔻 ---
 def create_xes_trace(prefix_events, new_case_id, rem_time_pred, activity_name_pred):
     """
     Creates a single pm4py Trace object from a prefix and predictions.
@@ -109,13 +110,22 @@ def create_xes_trace(prefix_events, new_case_id, rem_time_pred, activity_name_pr
         new_event_data = copy.deepcopy(event_data)
 
         new_event = pm4py.objects.log.obj.Event()
-        new_event['concept:name'] = new_event_data['activity']
-        new_event['org:resource'] = new_event_data.get('resource', 'Unknown')
+
+        # --- FIX ---
+        # The loader's transform methods produce 'activity_name' and 'resource_name'
+        # This was trying to access 'activity' and 'resource', causing the KeyError.
+        new_event['concept:name'] = new_event_data['activity_name']
+        new_event['org:resource'] = new_event_data.get('resource_name', 'Unknown')
+        # --- END FIX ---
+
         new_event['time:timestamp'] = datetime.fromtimestamp(new_event_data['timestamp'])
 
         # Add other attributes from the original event
         for key, value in new_event_data.items():
-            if key not in ['activity', 'resource', 'timestamp', 'concept:name', 'org:resource', 'time:timestamp']:
+            # Exclude all keys we've manually handled or that are not for XES
+            if key not in ['activity_name', 'resource_name', 'timestamp', 'concept:name', 'org:resource',
+                           'time:timestamp',
+                           'activity', 'resource', 'activity_embedding', 'resource_embedding']:
                 new_event[key] = value
 
         # 2. Annotate the *last* event with remaining time
@@ -139,6 +149,9 @@ def create_xes_trace(prefix_events, new_case_id, rem_time_pred, activity_name_pr
     return new_trace
 
 
+# --- 🔺 END MODIFIED FUNCTION 🔺 ---
+
+
 if __name__ == '__main__':
 
     # --- Argument Parsing (copied from testing.py) ---
@@ -148,14 +161,13 @@ if __name__ == '__main__':
     available_test_logs = list(default_config['log_paths']['testing'].keys())
     default_test_log = available_test_logs[0] if available_test_logs else None
 
-    # --- 🔻 NEW Required Argument 🔻 ---
+    # --- NEW Required Argument ---
     parser.add_argument(
         '--output_file',
         type=str,
         required=True,
         help="Path to save the output XES log (e.g., 'predictions.xes.gz')."
     )
-    # --- 🔺 END NEW 🔺 ---
 
     parser.add_argument(
         '--test_log_name',
@@ -182,12 +194,11 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    # --- 🔻 CRITICAL: This script ONLY works in retrieval mode 🔻 ---
+    # --- CRITICAL: This script ONLY works in retrieval mode ---
     if args.test_mode != 'retrieval_augmented':
         print(f"❌ Error: This script requires 'retrieval_augmented' mode to build support sets for inference.")
         print("Please run with --test_mode retrieval_augmented")
         exit(1)
-    # --- 🔺 END 🔺 ---
 
     print("--- 🚀 Initializing Prediction Script ---")
     print(f"  - Input Log: {args.test_log_name}")
@@ -276,8 +287,13 @@ if __name__ == '__main__':
 
         pred_label_idx = torch.argmax(logits, dim=1).item()
         predicted_activity_id = proto_classes[pred_label_idx].item()
-        # Map the predicted ID back to its string name
-        predicted_activity_name = id_to_activity_name[predicted_activity_id]
+
+        if 0 <= predicted_activity_id < len(id_to_activity_name):
+            # Map the predicted ID back to its string name
+            predicted_activity_name = id_to_activity_name[predicted_activity_id]
+        else:
+            # Fallback for an unexpected ID
+            predicted_activity_name = "Unknown (Pred. ID)"
 
         # --- Prediction 2: Remaining Time (Regression) ---
         reg_support_embeddings = all_embeddings_norm[support_indices]
