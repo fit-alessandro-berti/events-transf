@@ -70,7 +70,8 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
                     all_labels.extend(true_labels.cpu().numpy())
                 else:
                     all_preds.extend(predictions.view(-1).cpu().tolist())
-                    all_labels.extend(true_labels.view(-1).cpu.tolist())
+                    # --- FIX WAS HERE ---
+                    all_labels.extend(true_labels.view(-1).cpu().tolist())
             if not all_labels: continue
             if task_type == 'classification':
                 # Filter out invalid -100 labels
