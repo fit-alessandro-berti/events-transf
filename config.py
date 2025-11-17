@@ -1,4 +1,4 @@
-# File: C:\Users\berti\events-transf\config.py
+# File: config.py
 # config.py
 import os
 
@@ -75,6 +75,11 @@ CONFIG = {
     'episodic_label_shuffle': 'mixed', # "no" (False), "yes" (True), or "mixed" (alternates each epoch)
 
     # --- Test Parameters ---
+    # 'meta_learning':       Standard episodic evaluation (default).
+    # 'retrieval_augmented': Pre-compute all test embeddings, then use
+    #                        k-NN for the support set.
+    'test_mode': 'meta_learning',
+    'test_retrieval_k': [1, 5, 10, 20], # k-values for retrieval_augmented mode
     'num_test_episodes': 200,
     'num_cases_for_testing': 500,
 }

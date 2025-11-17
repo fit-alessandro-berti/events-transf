@@ -1,5 +1,6 @@
-# testing.py
+# File: testing.py
 import torch
+import torch.nn.functional as F
 import random
 import numpy as np
 import pandas as pd
@@ -10,6 +11,7 @@ from collections import defaultdict
 import os
 import re
 import warnings
+from tqdm import tqdm
 
 # --- Stand-alone execution imports ---
 from config import CONFIG
@@ -19,8 +21,12 @@ from time_transf import inverse_transform_time
 
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
 
+
 def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
-    # This function's logic remains the same and does not need modification.
+    """
+    Standard episodic meta-learning evaluation.
+    Samples support/query sets for each episode.
+    """
     print("\n🔬 Starting meta-testing on the Transformer-based Meta-Learner...")
     model.eval()
     for task_type, task_data in test_tasks.items():
@@ -49,7 +55,8 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
                     episode_classes = random.sample(eligible_classes, N_WAYS_TEST)
                     for cls in episode_classes:
                         samples = random.sample(class_dict[cls], k + 1)
-                        support_set.extend(samples[:k]); query_set.append(samples[k])
+                        support_set.extend(samples[:k]);
+                        query_set.append(samples[k])
                 else:
                     if len(task_data) < k + 1: continue
                     random.shuffle(task_data)
@@ -63,14 +70,165 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
                     all_labels.extend(true_labels.cpu().numpy())
                 else:
                     all_preds.extend(predictions.view(-1).cpu().tolist())
-                    all_labels.extend(true_labels.view(-1).cpu().tolist())
+                    all_labels.extend(true_labels.view(-1).cpu.tolist())
             if not all_labels: continue
             if task_type == 'classification':
-                print(f"[{k}-shot] Accuracy: {accuracy_score(all_labels, all_preds):.4f}")
+                # Filter out invalid -100 labels
+                valid_indices = [i for i, label in enumerate(all_labels) if label != -100]
+                if not valid_indices: continue
+                valid_preds = [all_preds[i] for i in valid_indices]
+                valid_labels = [all_labels[i] for i in valid_indices]
+                if not valid_labels: continue
+                print(f"[{k}-shot] Accuracy: {accuracy_score(valid_labels, valid_preds):.4f}")
             else:
-                preds = inverse_transform_time(np.array(all_preds)); preds[preds < 0] = 0
+                preds = inverse_transform_time(np.array(all_preds));
+                preds[preds < 0] = 0
                 labels = inverse_transform_time(np.array(all_labels))
-                print(f"[{k}-shot] MAE: {mean_absolute_error(labels, preds):.4f} | R-squared: {r2_score(labels, preds):.4f}")
+                print(
+                    f"[{k}-shot] MAE: {mean_absolute_error(labels, preds):.4f} | R-squared: {r2_score(labels, preds):.4f}")
+
+
+def _get_all_test_embeddings(model, test_tasks_list, batch_size=64):
+    """Helper function to compute embeddings for all (prefix, label) pairs in the test set."""
+    all_embeddings = []
+    all_labels = []
+    device = next(model.parameters()).device
+    model.eval()
+    with torch.no_grad():
+        for i in tqdm(range(0, len(test_tasks_list), batch_size), desc="Pre-computing test embeddings"):
+            batch_tasks = test_tasks_list[i:i + batch_size]
+            sequences = [t[0] for t in batch_tasks]
+            labels = [t[1] for t in batch_tasks]
+            if not sequences: continue
+
+            # Use the model's internal processing function
+            encoded_batch = model._process_batch(sequences)
+
+            all_embeddings.append(encoded_batch.cpu())
+            all_labels.extend(labels)
+
+    if not all_embeddings:
+        return torch.empty(0, device=device), torch.empty(0, device=device)
+
+    all_embeddings_tensor = torch.cat(all_embeddings, dim=0).to(device)
+    # Ensure labels are on the correct device
+    all_labels_tensor = torch.as_tensor(all_labels, device=device)
+
+    return all_embeddings_tensor, all_labels_tensor
+
+
+def evaluate_retrieval_augmented(model, test_tasks, num_retrieval_k_list, num_test_queries=200):
+    """
+    Retrieval-Augmented evaluation.
+    1. Computes all test embeddings.
+    2. For each query, finds the k-NN in the embedding space to form the support set.
+    """
+    print("\n🔬 Starting Retrieval-Augmented Evaluation...")
+    model.eval()
+
+    task_embeddings = {}
+
+    # --- 1. Pre-compute all embeddings ---
+    for task_type, task_data in test_tasks.items():
+        if not task_data:
+            print(f"Skipping {task_type}: No test data available.")
+            continue
+        embeddings, labels = _get_all_test_embeddings(model, task_data)
+        if embeddings.numel() == 0:
+            print(f"Skipping {task_type}: No embeddings were generated.")
+            continue
+
+        # L2-normalize for efficient cosine similarity
+        embeddings = F.normalize(embeddings, p=2, dim=1)
+        task_embeddings[task_type] = (embeddings, labels)
+        print(f"  - Pre-computed {embeddings.shape[0]} embeddings for {task_type}.")
+
+    # --- 2. Evaluate using k-NN retrieval ---
+    for task_type, (all_embeddings, all_labels) in task_embeddings.items():
+        print(f"\n--- Evaluating task: {task_type} ---")
+
+        # Select a subset of queries to evaluate
+        num_total_samples = all_embeddings.shape[0]
+        if num_total_samples < 2:
+            print("Skipping: Not enough samples to evaluate.")
+            continue
+
+        num_queries = min(num_test_queries, num_total_samples)
+        query_indices = random.sample(range(num_total_samples), num_queries)
+
+        # Pre-calculate similarity matrix (can be memory intensive if N is huge)
+        # For N=200, this is tiny. If N=50k, this is 50k*50k*4bytes = 10GB.
+        # Let's do it query by query to be safe.
+
+        for k in num_retrieval_k_list:
+            if k >= num_total_samples:
+                print(f"Skipping [k={k}]: k is larger than total samples.")
+                continue
+
+            all_preds, all_true_labels = [], []
+
+            for query_idx in query_indices:
+                query_embedding = all_embeddings[query_idx:query_idx + 1]  # [1, D]
+                query_label = all_labels[query_idx]
+
+                # --- Find k-NN Support Set ---
+                # Cosine similarity: (1, D) @ (D, N) -> (1, N)
+                sims = query_embedding @ all_embeddings.T
+
+                # Don't retrieve the query itself
+                sims[0, query_idx] = -float('inf')
+
+                # Get top k most similar
+                top_k_indices = torch.topk(sims.squeeze(0), k).indices
+
+                support_embeddings = all_embeddings[top_k_indices]  # [k, D]
+                support_labels = all_labels[top_k_indices]  # [k]
+
+                # --- Get Prediction ---
+                with torch.no_grad():
+                    if task_type == 'classification':
+                        # Use the model's proto_head directly
+                        logits, proto_classes = model.proto_head.forward_classification(
+                            support_embeddings, support_labels, query_embedding
+                        )
+
+                        # Map true label to the episodic label index
+                        label_map = {orig_label.item(): new_label for new_label, orig_label in enumerate(proto_classes)}
+                        mapped_true_label = label_map.get(query_label.item(), -100)  # -100 if class not in support
+
+                        pred_label_idx = torch.argmax(logits, dim=1).item()
+
+                        all_preds.append(pred_label_idx)
+                        all_true_labels.append(mapped_true_label)
+
+                    else:  # Regression
+                        prediction = model.proto_head.forward_regression(
+                            support_embeddings, support_labels.float(), query_embedding
+                        )
+                        all_preds.append(prediction.item())
+                        all_true_labels.append(query_label.item())
+
+            if not all_true_labels: continue
+
+            # --- 3. Report Metrics ---
+            if task_type == 'classification':
+                # Filter out invalid -100 labels (query class not in k-NN support)
+                valid_indices = [i for i, label in enumerate(all_true_labels) if label != -100]
+                if not valid_indices:
+                    print(f"[{k}-NN] Accuracy: 0.0000 (No valid predictions)")
+                    continue
+                valid_preds = [all_preds[i] for i in valid_indices]
+                valid_labels = [all_true_labels[i] for i in valid_indices]
+                if not valid_labels: continue
+                print(
+                    f"[{k}-NN] Retrieval Accuracy: {accuracy_score(valid_labels, valid_preds):.4f} (on {len(valid_labels)}/{num_queries} valid queries)")
+            else:
+                preds = inverse_transform_time(np.array(all_preds));
+                preds[preds < 0] = 0
+                labels = inverse_transform_time(np.array(all_true_labels))
+                print(
+                    f"[{k}-NN] Retrieval MAE: {mean_absolute_error(labels, preds):.4f} | R-squared: {r2_score(labels, preds):.4f}")
+
 
 def _extract_features_for_sklearn(trace, model, strategy):
     """Extracts a feature vector from a trace for use in sklearn models."""
@@ -80,7 +238,7 @@ def _extract_features_for_sklearn(trace, model, strategy):
         with torch.no_grad():
             encoded_vector = model._process_batch([trace])
             return encoded_vector.squeeze(0).cpu().numpy()
-    else: # pretrained
+    else:  # pretrained
         # Use a simple mean of pre-computed embeddings
         event_vectors = []
         for event in trace:
@@ -90,6 +248,7 @@ def _extract_features_for_sklearn(trace, model, strategy):
         if not event_vectors:
             return np.zeros(CONFIG['pretrained_settings']['embedding_dim'] + CONFIG['num_numerical_features'])
         return np.mean(np.array(event_vectors), axis=0)
+
 
 def evaluate_sklearn_baselines(model, test_tasks, num_shots_list, num_test_episodes=100):
     strategy = model.strategy
@@ -116,12 +275,13 @@ def evaluate_sklearn_baselines(model, test_tasks, num_shots_list, num_test_episo
                     if len(eligible_classes) < N_WAYS_TEST: continue
                     episode_classes = random.sample(eligible_classes, N_WAYS_TEST)
                     for cls in episode_classes:
-                        samples = random.sample(class_dict[cls], k+1)
-                        support_set.extend(samples[:k]); query_set.append(samples[k])
-                else: # Regression
+                        samples = random.sample(class_dict[cls], k + 1)
+                        support_set.extend(samples[:k]);
+                        query_set.append(samples[k])
+                else:  # Regression
                     if len(task_data) < k + 1: continue
                     random.shuffle(task_data)
-                    support_set, query_set = task_data[:k], task_data[k:k+1]
+                    support_set, query_set = task_data[:k], task_data[k:k + 1]
                 if not support_set or not query_set: continue
                 # Use the new feature extraction helper
                 X_train = np.array([_extract_features_for_sklearn(s[0], model, strategy) for s in support_set])
@@ -135,15 +295,20 @@ def evaluate_sklearn_baselines(model, test_tasks, num_shots_list, num_test_episo
                     sk_model = Ridge()
                 try:
                     sk_model.fit(X_train, y_train)
-                    all_preds.extend(sk_model.predict(X_test)); all_labels.extend(y_test)
-                except ValueError: continue
+                    all_preds.extend(sk_model.predict(X_test));
+                    all_labels.extend(y_test)
+                except ValueError:
+                    continue
             if not all_labels: continue
             if task_type == 'classification':
                 print(f"[{k}-shot] Logistic Regression Accuracy: {accuracy_score(all_labels, all_preds):.4f}")
             else:
-                preds = inverse_transform_time(np.array(all_preds)); preds[preds < 0] = 0
+                preds = inverse_transform_time(np.array(all_preds));
+                preds[preds < 0] = 0
                 labels = inverse_transform_time(np.array(all_labels))
-                print(f"[{k}-shot] Ridge Regression MAE: {mean_absolute_error(labels, preds):.4f} | R-squared: {r2_score(labels, preds):.4f}")
+                print(
+                    f"[{k}-shot] Ridge Regression MAE: {mean_absolute_error(labels, preds):.4f} | R-squared: {r2_score(labels, preds):.4f}")
+
 
 if __name__ == '__main__':
     strategy = CONFIG['embedding_strategy']
@@ -156,7 +321,8 @@ if __name__ == '__main__':
     checkpoints = [f for f in os.listdir(checkpoint_dir) if f.startswith('model_epoch_') and f.endswith('.pth')]
     if not checkpoints: exit("❌ Error: No model checkpoints found.")
 
-    latest_checkpoint_path = os.path.join(checkpoint_dir, sorted(checkpoints, key=lambda f: int(re.search(r'(\d+)', f).group(1)))[-1])
+    latest_checkpoint_path = os.path.join(checkpoint_dir,
+                                          sorted(checkpoints, key=lambda f: int(re.search(r'(\d+)', f).group(1)))[-1])
     print(f"🔍 Found latest checkpoint: {os.path.basename(latest_checkpoint_path)}")
 
     print("\n📦 Loading test data...")
@@ -165,12 +331,13 @@ if __name__ == '__main__':
     loader.load_training_artifacts(artifacts_path)
     testing_logs = loader.transform(CONFIG['log_paths']['testing'])
 
-    torch.manual_seed(42); np.random.seed(42)
+    torch.manual_seed(42);
+    np.random.seed(42)
 
     # --- Model Initialization ---
     if strategy == 'pretrained':
         model_params = {'embedding_dim': CONFIG['pretrained_settings']['embedding_dim']}
-    else: # learned
+    else:  # learned
         model_params = {
             'char_vocab_size': len(loader.char_to_id),
             'char_embedding_dim': CONFIG['learned_settings']['char_embedding_dim'],
@@ -178,7 +345,8 @@ if __name__ == '__main__':
         }
     model = MetaLearner(
         strategy=strategy, num_feat_dim=CONFIG['num_numerical_features'],
-        d_model=CONFIG['d_model'], n_heads=CONFIG['n_heads'], n_layers=CONFIG['n_layers'], dropout=CONFIG['dropout'], **model_params
+        d_model=CONFIG['d_model'], n_heads=CONFIG['n_heads'], n_layers=CONFIG['n_layers'], dropout=CONFIG['dropout'],
+        **model_params
     ).to(device)
 
     # Pass the character vocabulary to the model
@@ -198,5 +366,21 @@ if __name__ == '__main__':
         'regression': get_task_data(unseen_log, 'regression')
     }
 
-    evaluate_model(model, test_tasks, CONFIG['num_shots_test'], CONFIG['num_test_episodes'])
+    # --- Select Evaluation Mode based on Config ---
+    test_mode = CONFIG.get('test_mode', 'meta_learning')
+
+    if test_mode == 'retrieval_augmented':
+        print("\n--- Running in Retrieval-Augmented Evaluation Mode ---")
+        k_list = CONFIG.get('test_retrieval_k', CONFIG['num_shots_test'])
+        evaluate_retrieval_augmented(model, test_tasks, k_list, CONFIG['num_test_episodes'])
+
+    elif test_mode == 'meta_learning':
+        print("\n--- Running in Meta-Learning Evaluation Mode ---")
+        evaluate_model(model, test_tasks, CONFIG['num_shots_test'], CONFIG['num_test_episodes'])
+
+    else:
+        print(f"⚠️ Warning: Unknown test_mode '{test_mode}'. Defaulting to 'meta_learning'.")
+        evaluate_model(model, test_tasks, CONFIG['num_shots_test'], CONFIG['num_test_episodes'])
+
+    # Always run baselines for comparison
     evaluate_sklearn_baselines(model, test_tasks, CONFIG['num_shots_test'], CONFIG['num_test_episodes'])
