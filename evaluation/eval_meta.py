@@ -25,7 +25,9 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
         if task_type == 'classification':
             class_dict = defaultdict(list)
             # Assumes task_data is (prefix, label) or (prefix, label, case_id)
-            for task_item in test_tasks:
+            # 🔻 MODIFIED: Iterated over task_data, not test_tasks 🔻
+            for task_item in task_data:
+            # 🔺 END MODIFIED 🔺
                 seq, label = task_item[0], task_item[1]
                 class_dict[label].append((seq, label))
             class_dict = {c: items for c, items in class_dict.items() if len(items) >= max(num_shots_list) + 1}
