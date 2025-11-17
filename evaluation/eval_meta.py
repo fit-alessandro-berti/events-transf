@@ -27,7 +27,7 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
             # Assumes task_data is (prefix, label) or (prefix, label, case_id)
             # 🔻 MODIFIED: Iterated over task_data, not test_tasks 🔻
             for task_item in task_data:
-            # 🔺 END MODIFIED 🔺
+                # 🔺 END MODIFIED 🔺
                 seq, label = task_item[0], task_item[1]
                 class_dict[label].append((seq, label))
             class_dict = {c: items for c, items in class_dict.items() if len(items) >= max(num_shots_list) + 1}
@@ -79,9 +79,13 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
                 if task_type == 'classification':
                     all_preds.extend(torch.argmax(predictions, dim=1).cpu().numpy())
                     all_labels.extend(true_labels.cpu().numpy())
-                    # 🔻 MODIFIED: Store max confidence for the predicted class 🔻
-                    all_confidences.extend(torch.max(confidence, dim=1).values.cpu().numpy())
-                    # 🔺 END MODIFIED 🔺
+
+                    # --- 🔻 FIX 🔻 ---
+                    # The `confidence` tensor from MoEModel is already 1D (shape [N_q]).
+                    # We no longer need to call torch.max() on it.
+                    all_confidences.extend(confidence.cpu().numpy())
+                    # --- 🔺 END FIX 🔺 ---
+
                 else:
                     all_preds.extend(predictions.view(-1).cpu().tolist())
                     # 🔻 MODIFIED: Added missing () to .cpu() 🔻
@@ -101,7 +105,8 @@ def evaluate_model(model, test_tasks, num_shots_list, num_test_episodes=100):
                 valid_confidences = [all_confidences[i] for i in valid_indices]
                 if not valid_labels: continue
                 avg_conf = np.mean(valid_confidences)
-                print(f"[{k}-shot] Accuracy: {accuracy_score(valid_labels, valid_preds):.4f} | Avg. Confidence: {avg_conf:.4f}")
+                print(
+                    f"[{k}-shot] Accuracy: {accuracy_score(valid_labels, valid_preds):.4f} | Avg. Confidence: {avg_conf:.4f}")
                 # 🔺 END MODIFIED 🔺
             else:
                 preds = inverse_transform_time(np.array(all_preds));
