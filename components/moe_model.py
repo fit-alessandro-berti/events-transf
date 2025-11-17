@@ -127,4 +127,7 @@ class MoEModel(nn.Module):
                 return None, None, None
 
             # Combine all expert outputs
-            return self.aggregate_outputs(expert_outputs, task_type, all_true_labels)
+            # --- 🔻 FIX 🔻 ---
+            # Call the method with the leading underscore
+            return self._aggregate_outputs(expert_outputs, task_type, all_true_labels)
+            # --- 🔺 END FIX 🔺 ---
