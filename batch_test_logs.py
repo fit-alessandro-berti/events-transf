@@ -3,7 +3,10 @@
 """
 batch_test_logs.py
 
-... (docstring unchanged) ...
+Batch-run testing.py on all relevant logs and save the results into:
+    testing_output/<checkpoint_name>/
+with filenames like:
+    <checkpoint_name>_<log_name>_<mode>_<epoch>.txt
 """
 
 import os
@@ -15,7 +18,7 @@ from pathlib import Path
 
 
 # ----------------------------------------------------------------------
-# Helper: strip everything that is not alphanumeric or underscore
+# Helper: keep only alphanumeric + underscore (spaces → underscore)
 # ----------------------------------------------------------------------
 def alphanumeric(s: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_]", "", s.replace(" ", "_"))
@@ -27,11 +30,12 @@ def alphanumeric(s: str) -> str:
 def main():
     parser = argparse.ArgumentParser(description="Batch-run testing.py on all relevant logs")
     parser.add_argument("--checkpoint_dir", type=str, required=True,
-                        help="Checkpoint directory (used for model loading AND for output filename)")
+                        help="Checkpoint directory (used for model loading AND for output subfolder name)")
     parser.add_argument("--checkpoint_epoch", type=int, default=None,
                         help="Specific epoch to test (default: latest)")
     parser.add_argument("--test_log_name", type=str, default=None,
-                        help="Name of the test log as defined in config.py['log_paths']['testing'] (can be overridden by --test_mode)")
+                        help="Name of the test log as defined in config.py['log_paths']['testing'] "
+                             "(will be overridden per-log anyway)")
     parser.add_argument("--test_mode", type=str, default=None,
                         choices=["meta_learning", "retrieval_augmented"],
                         help="Test mode (default: whatever is currently in CONFIG)")
@@ -44,8 +48,15 @@ def main():
     project_root = Path(__file__).resolve().parent
     logs_dir = project_root / "logs"
     testing_script = project_root / "testing.py"
-    output_dir = project_root / "testing_output"
-    output_dir.mkdir(exist_ok=True)
+
+    # Base output directory
+    base_output_dir = project_root / "testing_output"
+    base_output_dir.mkdir(exist_ok=True)
+
+    # Subdirectory named after the checkpoint folder
+    checkpoint_name = Path(args.checkpoint_dir).name
+    checkpoint_output_dir = base_output_dir / alphanumeric(checkpoint_name)
+    checkpoint_output_dir.mkdir(exist_ok=True)
 
     if not testing_script.exists():
         print(f"ERROR: testing.py not found at {testing_script}")
@@ -61,13 +72,12 @@ def main():
         print("No logs found that start with at least four zeros.")
         return
 
-    print(f"Found {len(target_logs)} logs to test:")
+    print(f"Found {len(target_logs)} logs to test → saving into {checkpoint_output_dir}\n")
     for p in target_logs:
         print(f"  - {p.name}")
-    print()
 
     # ------------------------------------------------------------------
-    # Build the base command (everything that is common)
+    # Build the base command (common for every run)
     # ------------------------------------------------------------------
     cmd_base = [
         sys.executable, str(testing_script),
@@ -77,8 +87,6 @@ def main():
     if args.checkpoint_epoch is not None:
         cmd_base += ["--checkpoint_epoch", str(args.checkpoint_epoch)]
 
-    # This argument will be overridden in the loop, but if the loop
-    # logic changes, it's good to have a default.
     if args.test_log_name:
         cmd_base += ["--test_log_name", args.test_log_name]
 
@@ -86,57 +94,55 @@ def main():
         cmd_base += ["--test_mode", args.test_mode]
 
     # ------------------------------------------------------------------
-    # Prepare filename components (once, they are the same for every log)
+    # Filename components (same for all logs)
     # ------------------------------------------------------------------
-    chk_name = Path(args.checkpoint_dir).name
-    chk_part = alphanumeric(chk_name)
+    chk_part = alphanumeric(checkpoint_name)
 
     epoch_part = f"{args.checkpoint_epoch}" if args.checkpoint_epoch is not None else "latest"
-
     mode_part = alphanumeric(args.test_mode) if args.test_mode else "defaultmode"
 
     # ------------------------------------------------------------------
     # Run testing.py for each log
     # ------------------------------------------------------------------
     for log_path in target_logs:
-        # The actual log name without path/extension (used only for the output filename)
+        # Clean log name for the output filename
         log_stem = re.sub(r'\.xes(\.gz)?$', '', log_path.name, flags=re.IGNORECASE)
         log_part = alphanumeric(log_stem)
 
-        # Build the final output filename
+        # Final output file
         out_filename = f"{chk_part}_{log_part}_{mode_part}_{epoch_part}.txt"
-        out_path = output_dir / out_filename
+        out_path = checkpoint_output_dir / out_filename
 
-        print(f"Testing {log_path.name} → {out_path.name}")
+        print(f"\nTesting {log_path.name} → {out_path.name}")
 
-        # --- 🔻 MODIFIED: Pass the full path to testing.py 🔻 ---
-        # We pass the full path string. testing.py now accepts this.
-        # This replaces any default --test_log_name from cmd_base.
-        cmd = cmd_base + ["--test_log_name", str(log_path)]
-        # --- 🔺 END MODIFIED 🔺 ---
+        # Override the log with the full path (this replaces any default --test_log_name)
+        cmd = cmd_base.copy()  # important: fresh copy each iteration
+        cmd += ["--test_log_name", str(log_path)]
 
-        # Run and capture everything
         try:
             result = subprocess.run(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,   # merge stderr into stdout
+                stderr=subprocess.STDOUT,
                 text=True,
-                check=False                 # we want to continue even if testing.py returns non-zero
+                check=False
             )
+
             with open(out_path, "w", encoding="utf-8") as f:
                 f.write(f"COMMAND: {' '.join(cmd)}\n")
                 f.write(f"RETURN CODE: {result.returncode}\n")
                 f.write("=" * 80 + "\n")
                 f.write(result.stdout)
-            print(f"   → Finished (return code {result.returncode})")
+
+            printEEA(f"   → Finished (rc {result.returncode})")
+
         except Exception as e:
             error_msg = f"FAILED to run testing.py for {log_path.name}: {e}\n"
             print(error_msg)
             with open(out_path, "w", encoding="utf-8") as f:
                 f.write(error_msg)
 
-    print("\nAll done! Outputs are in:", output_dir)
+    print(f"\nAll done! Outputs are in: {checkpoint_output_dir}")
 
 
 if __name__ == "__main__":
