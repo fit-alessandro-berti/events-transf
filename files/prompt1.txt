@@ -1,0 +1,11 @@
+Provide a CSV containing the following columns:
+- log_name
+- k_of_shots
+- our_accuracy_class
+- our_mae
+- our_r_squared
+- sklearn_accuracy_class
+- sklearn_mae
+- sklearn_r_squared
+
+from the following log file:
