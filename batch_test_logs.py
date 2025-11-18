@@ -3,16 +3,14 @@
 """
 batch_test_logs.py
 
-Batch-run testing.py on all logs starting with at least THREE leading zeros
-(e.g., 000abc.xes.gz, 0000def.xes.gz, etc.).
+Batch-run testing.py on all logs starting with at least THREE leading zeros.
 
 Features:
-- Outputs go into testing_output/<checkpoint_name>/
-- Skips already processed logs (safe to resume partial runs)
-- Never overwrites existing output files
+- Output directory: testing_output/<checkpoint_name>[_<epoch>]
+- Skips already-processed files → perfect for resuming
+- Includes epoch in folder name only when explicitly given
 """
 
-import os
 import re
 import argparse
 import subprocess
@@ -33,9 +31,10 @@ def main():
     parser.add_argument("--checkpoint_dir", type=str, required=True,
                         help="Checkpoint directory (used for model loading AND output subfolder)")
     parser.add_argument("--checkpoint_epoch", type=int, default=None,
-                        help="Specific epoch to test (default: latest)")
+                        help="Specific epoch to test (default: latest). "
+                             "If provided, epoch is added to the output subfolder name.")
     parser.add_argument("--test_log_name", type=str, default=None,
-                        help="Default test log name (will be overridden per file anyway)")
+                        help="Default test log name (overridden per file anyway)")
     parser.add_argument("--test_mode", type=str, default=None,
                         choices=["meta_learning", "retrieval_augmented"],
                         help="Force a specific test mode")
@@ -43,7 +42,7 @@ def main():
     args = parser.parse_args()
 
     # ------------------------------------------------------------------
-    # Paths
+    # Paths & output directory (now includes epoch if given)
     # ------------------------------------------------------------------
     project_root = Path(__file__).resolve().parent
     logs_dir = project_root / "logs"
@@ -53,7 +52,17 @@ def main():
     base_output_dir.mkdir(exist_ok=True)
 
     checkpoint_name = Path(args.checkpoint_dir).name
-    checkpoint_output_dir = base_output_dir / alphanumeric(checkpoint_name)
+    chk_part = alphanumeric(checkpoint_name)
+
+    # Build subfolder name: <checkpoint_name>[_<epoch>]
+    if args.checkpoint_epoch is not None:
+        subfolder_name = f"{chk_part}_{args.checkpoint_epoch}"
+        epoch_part = str(args.checkpoint_epoch)
+    else:
+        subfolder_name = chk_part
+        epoch_part = "latest"
+
+    checkpoint_output_dir = base_output_dir / subfolder_name
     checkpoint_output_dir.mkdir(exist_ok=True)
 
     if not testing_script.exists():
@@ -64,22 +73,21 @@ def main():
     # Find logs starting with at least THREE zeros
     # ------------------------------------------------------------------
     pattern = re.compile(r"^0{3,}.*\.xes(\.gz)?$", re.IGNORECASE)
-    all_candidate_logs = [p for p in logs_dir.iterdir() if p.is_file() and pattern.match(p.name)]
-    all_candidate_logs.sort()  # consistent order
+    all_candidate_logs = sorted(
+        p for p in logs_dir.iterdir() if p.is_file() and pattern.match(p.name)
+    )
 
     if not all_candidate_logs:
         print("No logs found starting with 000 or more zeros.")
         return
 
     # ------------------------------------------------------------------
-    # Filename parts (common for all logs)
+    # Filename / mode parts
     # ------------------------------------------------------------------
-    chk_part = alphanumeric(checkpoint_name)
-    epoch_part = f"{args.checkpoint_epoch}" if args.checkpoint_epoch is not None else "latest"
     mode_part = alphanumeric(args.test_mode) if args.test_mode else "defaultmode"
 
     # ------------------------------------------------------------------
-    # Base command (common parts)
+    # Base command
     # ------------------------------------------------------------------
     cmd_base = [
         sys.executable, str(testing_script),
@@ -93,12 +101,12 @@ def main():
         cmd_base += ["--test_mode", args.test_mode]
 
     # ------------------------------------------------------------------
-    # Process each log (skip if output already exists)
+    # Process each log
     # ------------------------------------------------------------------
-    processed = 0
-    skipped = 0
+    processed = skipped = 0
 
-    print(f"Found {len(all_candidate_logs)} candidate logs → output directory: {checkpoint_output_dir}\n")
+    print(f"Found {len(all_candidate_logs)} candidate logs")
+    print(f"Output directory → {checkpoint_output_dir}\n")
 
     for log_path in all_candidate_logs:
         log_stem = re.sub(r'\.xes(\.gz)?$', '', log_path.name, flags=re.IGNORECASE)
@@ -108,7 +116,7 @@ def main():
         out_path = checkpoint_output_dir / out_filename
 
         if out_path.exists():
-            print(f"✓ SKIP (already exists): {log_path.name} → {out_path.name}")
+            print(f"✓ SKIP (exists): {log_path.name}")
             skipped += 1
             continue
 
@@ -124,7 +132,7 @@ def main():
                 stderr=subprocess.STDOUT,
                 text=True,
                 check=False,
-                timeout=3600  # optional: prevent infinite hangs (1 hour)
+                timeout=3600,  # 1 hour per log, adjust if needed
             )
 
             with open(out_path, "w", encoding="utf-8") as f:
@@ -133,9 +141,8 @@ def main():
                 f.write("=" * 80 + "\n")
                 f.write(result.stdout)
 
-            status = "OK" if result.returncode == 0 else f"ERROR ({result.returncode})"
+            status = "OK" if result.returncode == 0 else f"ERR {result.returncode}"
             print(f"   → Finished [{status}]")
-
             processed += 1
 
         except subprocess.TimeoutExpired:
@@ -146,15 +153,15 @@ def main():
             processed += 1
 
         except Exception as e:
-            msg = f"FAILED to run testing.py for {log_path.name}: {e}\n"
+            msg = f"FAILED: {log_path.name} → {e}\n"
             print(msg.strip())
             with open(out_path, "w", encoding="utf-8") as f:
                 f.write(msg)
             processed += 1
 
     print("\n" + "=" * 60)
-    print(f"DONE! Processed: {processed} | Skipped (already done): {skipped}")
-    print(f"All new outputs → {checkpoint_output_dir}")
+    print(f"DONE! Processed: {processed} | Skipped: {skipped}")
+    print(f"All results → {checkpoint_output_dir}")
     print("=" * 60)
 
 
