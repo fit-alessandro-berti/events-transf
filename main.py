@@ -160,6 +160,7 @@ def main():
     checkpoint_dir = args.checkpoint_dir
     os.makedirs(checkpoint_dir, exist_ok=True)
     artifacts_path = os.path.join(checkpoint_dir, 'training_artifacts.pth')
+    config_path = os.path.join(checkpoint_dir, 'training_config.pth')
     start_epoch = 0
     latest_checkpoint_path = None
 
@@ -175,6 +176,20 @@ def main():
             print(f"Found latest checkpoint: {latest_checkpoint}. Resuming from epoch {start_epoch + 1}.")
         else:
             print("No checkpoints found. Starting from epoch 1.")
+
+        if os.path.exists(config_path):
+            print(f"Loading saved config from {config_path} for resume...")
+            saved_config = torch.load(config_path)
+            CONFIG['moe_settings'] = saved_config['moe_settings']
+            CONFIG['embedding_strategy'] = saved_config['embedding_strategy']
+            CONFIG['d_model'] = saved_config['d_model']
+            CONFIG['n_heads'] = saved_config['n_heads']
+            CONFIG['n_layers'] = saved_config['n_layers']
+            CONFIG['dropout'] = saved_config['dropout']
+            CONFIG['pretrained_settings'] = saved_config.get('pretrained_settings', CONFIG['pretrained_settings'])
+            CONFIG['learned_settings'] = saved_config.get('learned_settings', CONFIG['learned_settings'])
+        else:
+            print("No saved config found for resume, using current.")
     else:
         print(f"--- 🗑️ Starting new training run. Clearing {checkpoint_dir} ---")
         for filename in os.listdir(checkpoint_dir):
@@ -186,6 +201,10 @@ def main():
                     shutil.rmtree(file_path)
             except Exception as e:
                 print(f'Failed to delete {file_path}. Reason: {e}')
+
+    # Save the (possibly updated) CONFIG
+    print("Saving config...")
+    torch.save(CONFIG, config_path)
     # --- 🔺 END MODIFIED 🔺 ---
 
     # --- 1. Data Preparation ---

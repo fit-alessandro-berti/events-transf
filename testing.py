@@ -72,6 +72,23 @@ if __name__ == '__main__':
 
     print("--- 🚀 Initializing Test Run with Configuration ---")
 
+    # --- 🔻 NEW: Load saved training config if exists 🔻 ---
+    config_path = os.path.join(args.checkpoint_dir, 'training_config.pth')
+    if os.path.exists(config_path):
+        print(f"Loading training config from {config_path} to match model...")
+        saved_config = torch.load(config_path)
+        CONFIG['moe_settings'] = saved_config['moe_settings']
+        CONFIG['embedding_strategy'] = saved_config['embedding_strategy']
+        CONFIG['d_model'] = saved_config['d_model']
+        CONFIG['n_heads'] = saved_config['n_heads']
+        CONFIG['n_layers'] = saved_config['n_layers']
+        CONFIG['dropout'] = saved_config['dropout']
+        CONFIG['pretrained_settings'] = saved_config.get('pretrained_settings', CONFIG['pretrained_settings'])
+        CONFIG['learned_settings'] = saved_config.get('learned_settings', CONFIG['learned_settings'])
+    else:
+        print("⚠️ No training config found, using default. This may cause state_dict mismatch.")
+    # --- 🔺 END NEW 🔺 ---
+
     # --- 🔻 NEW: Smart log path resolution 🔻 ---
     log_input = args.test_log_name
     log_path_to_transform = None
