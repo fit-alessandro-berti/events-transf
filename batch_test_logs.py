@@ -134,7 +134,7 @@ def main():
                 f.write("=" * 80 + "\n")
                 f.write(result.stdout)
 
-            printEEA(f"   → Finished (rc {result.returncode})")
+            print(f"   → Finished (rc {result.returncode})")
 
         except Exception as e:
             error_msg = f"FAILED to run testing.py for {log_path.name}: {e}\n"
