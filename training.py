@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import os
 import numpy as np
-from torch.cuda.amp import autocast, GradScaler  # 🔻 --- NEW IMPORT --- 🔻
+from torch.cuda.amp import GradScaler  # 🔻 --- MODIFIED IMPORT --- 🔻
 
 # --- Import from project files ---
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -114,8 +114,8 @@ def train(model, training_tasks, loader, config, checkpoint_dir, resume_epoch=0,
             loss = None
             progress_bar_task = "skip"
 
-            # --- 🔻 NEW: Wrap forward pass in autocast 🔻 ---
-            with autocast(enabled=use_amp):
+            # --- 🔻 MODIFIED: Use new torch.amp.autocast syntax 🔻 ---
+            with torch.amp.autocast(device_type='cuda', enabled=use_amp):
                 if current_train_mode == 'episodic':
                     loss, progress_bar_task = run_episodic_step(
                         active_expert,  # <-- MODIFIED
@@ -131,7 +131,7 @@ def train(model, training_tasks, loader, config, checkpoint_dir, resume_epoch=0,
                         task_type,
                         config
                     )
-            # --- 🔺 END NEW 🔺 ---
+            # --- 🔺 END MODIFIED 🔺 ---
             # 🔺🔺🔺 END REFACTORED 🔺🔺🔺
 
             # --- COMMON: Loss Backward and Step ---
