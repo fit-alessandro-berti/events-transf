@@ -2,7 +2,7 @@
 """
 batch_train.py
 
-Runs training.py with multiple configurations in parallel threads.
+Runs main.py with multiple training configurations in parallel threads.
 Each job's output (stdout/stderr) is redirected to a unique log file
 in the ./training_output directory.
 """
@@ -16,11 +16,10 @@ from pathlib import Path
 # --- Configuration ---
 
 # 1. Define the root of your project
-# (This script assumes it's in the same directory as training.py)
 PROJECT_ROOT = Path(__file__).resolve().parent
 
-# 2. Path to the training script
-TRAINING_SCRIPT = PROJECT_ROOT / "training.py"
+# 2. Path to the main training script to execute
+TRAINING_SCRIPT = PROJECT_ROOT / "main.py"  # <-- CORRECTED
 
 # 3. Directory to save checkpoint folders in
 CHECKPOINTS_BASE_DIR = PROJECT_ROOT / "checkpoints"
@@ -29,7 +28,6 @@ CHECKPOINTS_BASE_DIR = PROJECT_ROOT / "checkpoints"
 LOG_OUTPUT_DIR = PROJECT_ROOT / "training_output"
 
 # 5. Define the training jobs to run
-# Each job is a dictionary specifying its unique configuration.
 TRAINING_JOBS = [
     {
         "name": "chk_shuffle_yes_episodic",
@@ -43,7 +41,6 @@ TRAINING_JOBS = [
     },
     {
         "name": "chk_shuffle_no_episodic",
-        "name_short": "NoShuffle-Episodic",
         "shuffle": "no",
         "strategy": "episodic",
     },
@@ -61,7 +58,7 @@ TRAINING_JOBS = [
 def run_training_job(job_config: dict):
     """
     This function is executed by each thread.
-    It builds and runs a single training.py command.
+    It builds and runs a single main.py command.
     """
 
     # 1. Get job details
@@ -77,7 +74,6 @@ def run_training_job(job_config: dict):
     checkpoint_dir.mkdir(exist_ok=True, parents=True)
 
     # 4. Build the subprocess command
-    #    We use sys.executable to ensure we use the same Python interpreter.
     cmd = [
         sys.executable,
         str(TRAINING_SCRIPT),
@@ -85,7 +81,7 @@ def run_training_job(job_config: dict):
         "--episodic_label_shuffle", shuffle,
         "--training_strategy", strategy,
         "--checkpoint_dir", str(checkpoint_dir),
-        "--cleanup_checkpoints"  # Saves disk space by only keeping the final model
+        # --- --cleanup_checkpoints option REMOVED as requested ---
     ]
 
     cmd_str = ' '.join(cmd)
@@ -97,14 +93,12 @@ def run_training_job(job_config: dict):
     try:
         # Open the log file in 'w' mode (overwrites old logs)
         with open(log_file_path, "w", encoding="utf-8") as log_file:
-            # We use subprocess.run, which is the modern equivalent
-            # of os.system but with better I/O control.
             result = subprocess.run(
                 cmd,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,  # Merge stderr into stdout
                 text=True,
-                check=False  # Don't raise an error if training.py fails
+                check=False
             )
 
         if result.returncode == 0:
@@ -113,7 +107,6 @@ def run_training_job(job_config: dict):
             print(f"[Thread: {job_name}] ❌ FINISHED (Error: {result.returncode})")
 
     except Exception as e:
-        # Catch errors if the script *itself* fails to launch
         error_msg = f"--- LAUNCH FAILED ---\nFailed to start {job_name}: {e}\nCommand: {cmd_str}\n"
         print(f"[Thread: {job_name}] 💥 CRITICAL FAILURE: {e}")
         with open(log_file_path, "a", encoding="utf-8") as log_file:
@@ -129,7 +122,7 @@ def main():
 
     # --- 1. Initial Checks ---
     if not TRAINING_SCRIPT.exists():
-        print(f"❌ ERROR: training.py not found at {TRAINING_SCRIPT}")
+        print(f"❌ ERROR: main.py not found at {TRAINING_SCRIPT}")
         print("Please make sure this script is in the same directory.")
         sys.exit(1)
 
@@ -143,14 +136,13 @@ def main():
     # --- 2. Launch Threads ---
     threads = []
     for job in TRAINING_JOBS:
-        # Create a thread for each job, targeting the run_training_job function
         t = threading.Thread(target=run_training_job, args=(job,))
         threads.append(t)
-        t.start()  # Start the thread (and the job)
+        t.start()
 
     # --- 3. Wait for all threads to complete ---
     for t in threads:
-        t.join()  # This blocks the main script until the thread is done
+        t.join()
 
     print("\n" + "-" * 30)
     print("🎉 All training jobs are complete.")
