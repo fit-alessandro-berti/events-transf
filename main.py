@@ -38,6 +38,12 @@ def main():
         default=None,
         help="Stop training after this specific epoch number completes (e.g., 1)."
     )
+    # --- 🔻 NEW: Cleanup Argument 🔻 ---
+    parser.add_argument(
+        '--cleanup_checkpoints',
+        action='store_true',
+        help="Remove all intermediate checkpoints after training, keeping only the last one."
+    )
     # --- 🔺 END NEW 🔺 ---
 
     # --- Core Model Strategy ---
@@ -139,6 +145,7 @@ def main():
     print(f"  - Resume Training: {args.resume}")
     if args.stop_after_epoch:
         print(f"  - Stop After Epoch: {args.stop_after_epoch}")
+    print(f"  - Cleanup Checkpoints: {args.cleanup_checkpoints}")
     # --- 🔺 END NEW 🔺 ---
 
     torch.manual_seed(42)
@@ -224,7 +231,8 @@ def main():
         CONFIG,
         checkpoint_dir=checkpoint_dir,
         resume_epoch=start_epoch,
-        stop_after_epoch=args.stop_after_epoch
+        stop_after_epoch=args.stop_after_epoch,
+        cleanup_checkpoints=args.cleanup_checkpoints
     )
     # --- 🔺 END MODIFIED 🔺 ---
 

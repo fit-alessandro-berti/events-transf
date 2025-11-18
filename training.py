@@ -7,6 +7,7 @@ from tqdm import tqdm
 import os
 import numpy as np
 from torch.cuda.amp import GradScaler  # 🔻 --- MODIFIED IMPORT --- 🔻
+import re  # 🔻 --- NEW IMPORT --- 🔻
 
 # --- Import from project files ---
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -16,7 +17,10 @@ from training_strategies.retrieval_strategy import run_retrieval_step
 from training_strategies.train_utils import evaluate_embedding_quality
 
 
-def train(model, training_tasks, loader, config, checkpoint_dir, resume_epoch=0, stop_after_epoch=None):
+# --- 🔻 MODIFIED: Function signature 🔻 ---
+def train(model, training_tasks, loader, config, checkpoint_dir, resume_epoch=0, stop_after_epoch=None,
+          cleanup_checkpoints=False):
+    # --- 🔺 END MODIFIED 🔺 ---
     """
     Main training loop.
     ... (docstring unchanged) ...
@@ -66,6 +70,8 @@ def train(model, training_tasks, loader, config, checkpoint_dir, resume_epoch=0,
     num_experts = model.num_experts
     if num_experts > 1:
         print(f"✅ MoE Training enabled: Randomly selecting 1 of {num_experts} experts per step.")
+
+    last_saved_epoch = 0  # 🔻 --- NEW --- 🔻
 
     # --- 🔻 MODIFIED: Loop starts from resume_epoch 🔻 ---
     for epoch in range(resume_epoch, config['epochs']):
@@ -165,12 +171,39 @@ def train(model, training_tasks, loader, config, checkpoint_dir, resume_epoch=0,
         checkpoint_path = os.path.join(checkpoint_dir, f"model_epoch_{epoch + 1}.pth")
         torch.save(model.state_dict(), checkpoint_path)
         print(f"💾 Model checkpoint saved to {checkpoint_path}")
+        last_saved_epoch = epoch + 1  # 🔻 --- NEW --- 🔻
 
         # --- 🔻 NEW: Stop-after-epoch logic 🔻 ---
         if stop_after_epoch is not None and (epoch + 1) == stop_after_epoch:
-            print(f"\n--- 🛑 Stopping training after epoch {epoch + 1} as requested. ---")
+            print(f"\n--- 🛑 Stopping training after epoch {stop_after_epoch} as requested. ---")
             break
         # --- 🔺 END NEW 🔺 ---
         # --- 🔺 END MODIFIED 🔺 ---
 
     print("✅ Meta-training complete.")
+
+    # --- 🔻 NEW: Cleanup intermediate checkpoints 🔻 ---
+    if cleanup_checkpoints and last_saved_epoch > 0:
+        print(f"--- 🧹 Cleaning up intermediate checkpoints... ---")
+        file_to_keep = f"model_epoch_{last_saved_epoch}.pth"
+        print(f"  - Keeping final checkpoint: {file_to_keep}")
+
+        checkpoint_pattern = re.compile(r"^model_epoch_(\d+)\.pth$")
+
+        try:
+            files_in_dir = os.listdir(checkpoint_dir)
+            removed_count = 0
+            for filename in files_in_dir:
+                if checkpoint_pattern.match(filename) and filename != file_to_keep:
+                    file_path = os.path.join(checkpoint_dir, filename)
+                    os.remove(file_path)
+                    removed_count += 1
+            if removed_count > 0:
+                print(f"  - Removed {removed_count} intermediate checkpoint(s).")
+            else:
+                print(f"  - No intermediate checkpoints found to remove.")
+        except Exception as e:
+            print(f"  - ⚠️ Error during checkpoint cleanup: {e}")
+    elif cleanup_checkpoints:
+        print(f"--- ⚠️ Skipping checkpoint cleanup: No epoch was saved. ---")
+    # --- 🔺 END NEW 🔺 ---
