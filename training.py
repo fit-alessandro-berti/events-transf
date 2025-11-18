@@ -25,7 +25,8 @@ from training_strategies.train_utils import evaluate_embedding_quality
 # 🔺🔺🔺 END REMOVED 🔺🔺🔺
 
 
-def train(model, training_tasks, loader, config):
+# --- 🔻 MODIFIED: Function signature updated 🔻 ---
+def train(model, training_tasks, loader, config, checkpoint_dir, resume_epoch=0, stop_after_epoch=None):
     """
     Main training loop.
     Delegates the logic for each step to specific strategy functions.
@@ -33,13 +34,24 @@ def train(model, training_tasks, loader, config):
     MODIFIED for MoE:
     - Selects a random expert (`active_expert`) each step.
     - Passes the `active_expert` (a MetaLearner) to the step functions.
-    """
-    print("🚀 Starting meta-training...")
-    optimizer = optim.AdamW(model.parameters(), lr=config['lr'])
-    scheduler = CosineAnnealingLR(optimizer, T_max=config['epochs'], eta_min=1e-6)
 
-    checkpoint_dir = './checkpoints'
-    os.makedirs(checkpoint_dir, exist_ok=True)
+    MODIFIED for args:
+    - Accepts `checkpoint_dir` for saving.
+    - Accepts `resume_epoch` to start the loop from.
+    - Accepts `stop_after_epoch` to break the loop early.
+    """
+    print(f"🚀 Starting meta-training...")
+    if resume_epoch > 0:
+        print(f"--- Resuming from epoch {resume_epoch + 1} ---")
+
+    optimizer = optim.AdamW(model.parameters(), lr=config['lr'])
+    # Adjust scheduler if resuming
+    initial_epoch = resume_epoch if resume_epoch > 0 else -1
+    scheduler = CosineAnnealingLR(optimizer, T_max=config['epochs'], eta_min=1e-6, last_epoch=initial_epoch)
+
+    # checkpoint_dir is now passed as an argument
+    # os.makedirs(checkpoint_dir, exist_ok=True) # Already created in main.py
+    # --- 🔺 END MODIFIED 🔺 ---
 
     cls_task_pools = [pool for pool in training_tasks['classification'] if pool]
     reg_task_pools = [pool for pool in training_tasks['regression'] if pool]
@@ -58,14 +70,14 @@ def train(model, training_tasks, loader, config):
     shuffle_strategy = str(config.get('episodic_label_shuffle', 'no')).lower()
     print(f"✅ Episodic Label Shuffle strategy set to: '{shuffle_strategy}'")
 
-    # --- 🔻 MoE Setup 🔻 ---
-    # model is the MoEModel wrapper
+    # --- MoE Setup ---
     num_experts = model.num_experts
     if num_experts > 1:
         print(f"✅ MoE Training enabled: Randomly selecting 1 of {num_experts} experts per step.")
-    # --- 🔺 End MoE Setup 🔺 ---
 
-    for epoch in range(config['epochs']):
+    # --- 🔻 MODIFIED: Loop starts from resume_epoch 🔻 ---
+    for epoch in range(resume_epoch, config['epochs']):
+        # --- 🔺 END MODIFIED 🔺 ---
         model.train()  # Set the main MoEModel to train mode
         total_loss = 0.0
 
@@ -83,11 +95,9 @@ def train(model, training_tasks, loader, config):
 
         for step in progress_bar:
 
-            # --- 🔻 MoE Expert Selection 🔻 ---
-            # For each step, randomly choose one expert to train
+            # --- MoE Expert Selection ---
             expert_to_train_id = random.randint(0, num_experts - 1)
             active_expert = model.experts[expert_to_train_id]
-            # --- 🔺 End MoE Expert Selection 🔺 ---
 
             # --- Determine which strategy to use for this step ---
             current_train_mode = training_strategy
@@ -113,7 +123,6 @@ def train(model, training_tasks, loader, config):
             progress_bar_task = "skip"
 
             if current_train_mode == 'episodic':
-                # Pass the specific expert, not the whole MoE model
                 loss, progress_bar_task = run_episodic_step(
                     active_expert,  # <-- MODIFIED
                     task_data_pool,
@@ -121,9 +130,7 @@ def train(model, training_tasks, loader, config):
                     config,
                     should_shuffle_labels
                 )
-
             elif current_train_mode == 'retrieval':
-                # Pass the specific expert, not the whole MoE model
                 loss, progress_bar_task = run_retrieval_step(
                     active_expert,  # <-- MODIFIED
                     task_data_pool,
@@ -149,15 +156,21 @@ def train(model, training_tasks, loader, config):
         current_lr = optimizer.param_groups[0]['lr']
         print(f"\nEpoch {epoch + 1} finished. Average Loss: {avg_loss:.4f} | Current LR: {current_lr:.6f}")
 
-        # Call the imported helper function
-        # --- 🔻 MoE Change 🔻 ---
         # Evaluate embedding quality on the first expert
         evaluate_embedding_quality(model.experts[0], loader)
-        # --- 🔺 End MoE Change 🔺 ---
 
         scheduler.step()
+
+        # --- 🔻 MODIFIED: Use checkpoint_dir argument 🔻 ---
         checkpoint_path = os.path.join(checkpoint_dir, f"model_epoch_{epoch + 1}.pth")
         torch.save(model.state_dict(), checkpoint_path)
         print(f"💾 Model checkpoint saved to {checkpoint_path}")
+
+        # --- 🔻 NEW: Stop-after-epoch logic 🔻 ---
+        if stop_after_epoch is not None and (epoch + 1) == stop_after_epoch:
+            print(f"\n--- 🛑 Stopping training after epoch {epoch + 1} as requested. ---")
+            break
+        # --- 🔺 END NEW 🔺 ---
+        # --- 🔺 END MODIFIED 🔺 ---
 
     print("✅ Meta-training complete.")

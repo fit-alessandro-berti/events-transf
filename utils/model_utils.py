@@ -16,6 +16,7 @@ from components.moe_model import MoEModel  # Import the new MoE wrapper
 
 def init_loader(config):
     """Initializes and returns an XESLogLoader based on the config."""
+    # ... (function unchanged) ...
     strategy = config['embedding_strategy']
     sbert_model_name = config['pretrained_settings']['sbert_model']
     loader = XESLogLoader(strategy=strategy, sbert_model_name=sbert_model_name)
@@ -27,6 +28,7 @@ def create_model(config, loader, device):
     Initializes the MoEModel (which wraps MetaLearner(s))
     based on the config and loader.
     """
+    # ... (function unchanged) ...
     strategy = config['embedding_strategy']
 
     # --- 🔻 MoE Config 🔻 ---
@@ -68,21 +70,43 @@ def create_model(config, loader, device):
     return model
 
 
-def load_model_weights(model, checkpoint_dir, device):
-    """Finds the latest checkpoint and loads its weights into the model."""
+# --- 🔻 MODIFIED: Function signature and logic updated 🔻 ---
+def load_model_weights(model, checkpoint_dir, device, epoch_num=None):
+    """
+    Finds the latest checkpoint (or a specific one) and loads its weights.
+
+    Args:
+        model (nn.Module): The model to load weights into.
+        checkpoint_dir (str): The directory containing checkpoints.
+        device (torch.device): The device to map weights to.
+        epoch_num (int, optional): Specific epoch to load. If None, loads latest.
+    """
     if not os.path.isdir(checkpoint_dir):
-        exit("❌ Error: Checkpoint directory not found.")
+        exit(f"❌ Error: Checkpoint directory not found at {checkpoint_dir}")
 
-    checkpoints = [f for f in os.listdir(checkpoint_dir) if f.startswith('model_epoch_') and f.endswith('.pth')]
-    if not checkpoints:
-        exit("❌ Error: No model checkpoints found.")
+    checkpoint_path = None
 
-    latest_checkpoint_path = os.path.join(
-        checkpoint_dir,
-        sorted(checkpoints, key=lambda f: int(re.search(r'(\d+)', f).group(1)))[-1]
-    )
-    print(f"🔍 Found latest checkpoint: {os.path.basename(latest_checkpoint_path)}")
+    if epoch_num is not None:
+        # --- Load specific epoch ---
+        checkpoint_name = f"model_epoch_{epoch_num}.pth"
+        checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
+        if not os.path.exists(checkpoint_path):
+            exit(f"❌ Error: Specific checkpoint not found: {checkpoint_path}")
+        print(f"🔍 Found specific checkpoint: {checkpoint_name}")
+    else:
+        # --- Load latest epoch (original logic) ---
+        checkpoints = [f for f in os.listdir(checkpoint_dir) if f.startswith('model_epoch_') and f.endswith('.pth')]
+        if not checkpoints:
+            exit(f"❌ Error: No model checkpoints found in {checkpoint_dir}.")
 
-    print(f"💾 Loading weights from {latest_checkpoint_path}...")
-    model.load_state_dict(torch.load(latest_checkpoint_path, map_location=device))
-    return latest_checkpoint_path
+        latest_checkpoint_name = sorted(checkpoints, key=lambda f: int(re.search(r'(\d+)', f).group(1)))[-1]
+        checkpoint_path = os.path.join(
+            checkpoint_dir,
+            latest_checkpoint_name
+        )
+        print(f"🔍 Found latest checkpoint: {latest_checkpoint_name}")
+
+    print(f"💾 Loading weights from {checkpoint_path}...")
+    model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+    return checkpoint_path
+# --- 🔺 END MODIFIED 🔺 ---

@@ -4,7 +4,7 @@ import numpy as np
 import os
 import re
 import warnings
-import argparse  # --- (no new import needed) ---
+import argparse
 
 # --- Stand-alone execution imports ---
 from config import CONFIG
@@ -20,9 +20,24 @@ from evaluation import evaluate_model, evaluate_retrieval_augmented, evaluate_sk
 if __name__ == '__main__':
 
     # --- 🔻 MODIFIED: Argument Parsing 🔻 ---
-    # ... (argument parsing unchanged) ...
     parser = argparse.ArgumentParser(description="Run the meta-learning model evaluation script.")
     default_config = CONFIG
+
+    # --- 🔻 NEW: Checkpoint Arguments 🔻 ---
+    parser.add_argument(
+        '--checkpoint_dir',
+        type=str,
+        default='./checkpoints',
+        help="Directory to load checkpoints and artifacts from."
+    )
+    parser.add_argument(
+        '--checkpoint_epoch',
+        type=int,
+        default=None,
+        help="Specific epoch checkpoint to test (e.g., 1, 5). Defaults to the latest."
+    )
+    # --- 🔺 END NEW 🔺 ---
+
     available_test_logs = list(default_config['log_paths']['testing'].keys())
     default_test_log = available_test_logs[0] if available_test_logs else None
     parser.add_argument(
@@ -63,20 +78,28 @@ if __name__ == '__main__':
     print(f"  - Test Log: {args.test_log_name}")
     print(f"  - Test Mode: {CONFIG['test_mode']}")
     print(f"  - Test Episodes: {CONFIG['num_test_episodes']}")
+    # --- 🔻 NEW: Print new args 🔻 ---
+    print(f"  - Checkpoint Directory: {args.checkpoint_dir}")
+    if args.checkpoint_epoch:
+        print(f"  - Checkpoint Epoch: {args.checkpoint_epoch}")
+    else:
+        print("  - Checkpoint Epoch: Latest")
+    # --- 🔺 END NEW 🔺 ---
     if CONFIG['test_mode'] == 'retrieval_augmented':
         print(f"  - Retrieval K-values: {CONFIG['test_retrieval_k']}")
     # --- 🔺 END MODIFIED 🔺 ---
 
-    # ... (strategy, device, checkpoint setup unchanged) ...
     strategy = CONFIG['embedding_strategy']
     print(f"--- Running Testing Script in Stand-Alone Mode (strategy: '{strategy}') ---")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    checkpoint_dir = './checkpoints'
+
+    # --- 🔻 MODIFIED: Use args for paths 🔻 ---
+    checkpoint_dir = args.checkpoint_dir
     artifacts_path = os.path.join(checkpoint_dir, 'training_artifacts.pth')
+    # --- 🔺 END MODIFIED 🔺 ---
 
     # --- 🔻 MODIFIED: Load Data 🔻 ---
-    # ... (data loading unchanged) ...
     print("\n📦 Loading test data...")
     loader = init_loader(CONFIG)
     loader.load_training_artifacts(artifacts_path)
@@ -94,9 +117,16 @@ if __name__ == '__main__':
     torch.manual_seed(42);
     np.random.seed(42)
 
-    # ... (model init and weight loading unchanged) ...
     model = create_model(CONFIG, loader, device)
-    load_model_weights(model, checkpoint_dir, device)
+
+    # --- 🔻 MODIFIED: Update load_model_weights call 🔻 ---
+    load_model_weights(
+        model,
+        checkpoint_dir,
+        device,
+        epoch_num=args.checkpoint_epoch
+    )
+    # --- 🔺 END MODIFIED 🔺 ---
 
     # --- 🔻 MODIFIED: Get correct log 🔻 ---
     unseen_log = testing_logs.get(test_log_name)
@@ -112,7 +142,7 @@ if __name__ == '__main__':
     }
 
     # --- 🔻🔻🔻 MODIFIED: Evaluation Logic 🔻🔻🔻 ---
-    # This part now conditionally runs the correct baseline.
+    # ... (evaluation logic unchanged) ...
     test_mode = CONFIG.get('test_mode', 'meta_learning')
     k_list_meta = CONFIG['num_shots_test']
     k_list_retrieval = CONFIG.get('test_retrieval_k', k_list_meta)
@@ -122,34 +152,25 @@ if __name__ == '__main__':
         evaluate_retrieval_augmented(
             model, test_tasks, k_list_retrieval, CONFIG['num_test_episodes']
         )
-
-        # --- NEW: Run PCA-kNN comparison ---
         print("\n--- Running PCA-kNN Baseline Comparison ---")
         evaluate_pca_knn(
             model, test_tasks, k_list_retrieval, CONFIG['num_test_episodes']
         )
-        # --- END NEW ---
 
     elif test_mode == 'meta_learning':
         print("\n--- Running in Meta-Learning Evaluation Mode ---")
         evaluate_model(
             model, test_tasks, k_list_meta, CONFIG['num_test_episodes']
         )
-
-        # --- Run standard baselines for comparison ---
         evaluate_sklearn_baselines(
             model, test_tasks, k_list_meta, CONFIG['num_test_episodes']
         )
-
     else:
         print(f"⚠️ Warning: Unknown test_mode '{test_mode}'. Defaulting to 'meta_learning'.")
         evaluate_model(
             model, test_tasks, k_list_meta, CONFIG['num_test_episodes']
         )
-
-        # --- Run standard baselines for comparison ---
         evaluate_sklearn_baselines(
             model, test_tasks, k_list_meta, CONFIG['num_test_episodes']
         )
-
-    # --- 🔺🔺🔺 END MODIFIED 🔺🔺🔺 ---
+    # --- 🔺🔺🔺 END MODIFIED 🔺🔺🔺
