@@ -214,7 +214,7 @@ if __name__ == '__main__':
 
     print(f"Starting prediction for {len(all_tasks)} prefixes...")
     output_log = pm4py.objects.log.obj.EventLog()
-    k_for_support = args.in Dernference_k
+    k_for_support = args.inference_k
 
     for i, task in enumerate(tqdm(all_tasks, desc="  - Predicting")):
         query_embedding_norm = all_embeddings_norm[i:i + 1]
