@@ -29,15 +29,16 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
     batch_labels = np.array([t[1] for t in batch_tasks_raw])
     batch_case_ids = np.array([t[2] for t in batch_tasks_raw])
 
-    # 2. Embed the entire batch
-    with torch.no_grad():  # Embeddings are detached for k-NN search
-        all_embeddings = model._process_batch(batch_prefixes)
-        all_embeddings_norm = F.normalize(all_embeddings, p=2, dim=1)
-
-    # 3. Re-attach embeddings for gradient flow
+    # --- 🔻 MODIFIED: Compute embeddings ONCE 🔻 ---
+    # 2. Embed the entire batch ONCE (with gradients)
     all_embeddings = model._process_batch(batch_prefixes)
-
     device = all_embeddings.device
+
+    # 3. Create a detached, normalized version for k-NN search
+    with torch.no_grad():
+        all_embeddings_norm = F.normalize(all_embeddings, p=2, dim=1)
+    # --- 🔺 END MODIFIED 🔺 ---
+
     total_loss_for_batch = 0.0
     queries_processed = 0
 

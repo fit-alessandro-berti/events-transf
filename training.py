@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import os
 import numpy as np
+from torch.cuda.amp import autocast, GradScaler  # 🔻 --- NEW IMPORT --- 🔻
 
 # --- Import from project files ---
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -36,6 +37,13 @@ def train(model, training_tasks, loader, config, checkpoint_dir, resume_epoch=0,
     if resume_epoch > 0:
         scheduler.last_epoch = resume_epoch
     # --- 🔺 END MODIFIED 🔺 ---
+
+    # --- 🔻 NEW: Initialize GradScaler for AMP 🔻 ---
+    # Only enable scaler if on CUDA
+    use_amp = torch.cuda.is_available()
+    scaler = GradScaler(enabled=use_amp)
+    print(f"✅ Automatic Mixed Precision (AMP) enabled: {use_amp}")
+    # --- 🔺 END NEW 🔺 ---
 
     cls_task_pools = [pool for pool in training_tasks['classification'] if pool]
     reg_task_pools = [pool for pool in training_tasks['regression'] if pool]
@@ -102,32 +110,40 @@ def train(model, training_tasks, loader, config, checkpoint_dir, resume_epoch=0,
 
             optimizer.zero_grad(set_to_none=True)
 
-            # 🔻🔻🔻 REFACTORED STEP LOGIC 🔻🔻🔻
+            # 🔻🔻🔻 REFACTORED STEP LOGIC (with AMP) 🔻🔻🔻
             loss = None
             progress_bar_task = "skip"
 
-            if current_train_mode == 'episodic':
-                loss, progress_bar_task = run_episodic_step(
-                    active_expert,  # <-- MODIFIED
-                    task_data_pool,
-                    task_type,
-                    config,
-                    should_shuffle_labels
-                )
-            elif current_train_mode == 'retrieval':
-                loss, progress_bar_task = run_retrieval_step(
-                    active_expert,  # <-- MODIFIED
-                    task_data_pool,
-                    task_type,
-                    config
-                )
+            # --- 🔻 NEW: Wrap forward pass in autocast 🔻 ---
+            with autocast(enabled=use_amp):
+                if current_train_mode == 'episodic':
+                    loss, progress_bar_task = run_episodic_step(
+                        active_expert,  # <-- MODIFIED
+                        task_data_pool,
+                        task_type,
+                        config,
+                        should_shuffle_labels
+                    )
+                elif current_train_mode == 'retrieval':
+                    loss, progress_bar_task = run_retrieval_step(
+                        active_expert,  # <-- MODIFIED
+                        task_data_pool,
+                        task_type,
+                        config
+                    )
+            # --- 🔺 END NEW 🔺 ---
             # 🔺🔺🔺 END REFACTORED 🔺🔺🔺
 
             # --- COMMON: Loss Backward and Step ---
             if loss is not None and not torch.isnan(loss):
-                loss.backward()
+                # --- 🔻 MODIFIED: Use GradScaler 🔻 ---
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)  # Unscale gradients for clipping
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
+                # --- 🔺 END MODIFIED 🔺 ---
+
                 total_loss += loss.item()
 
             progress_bar_postfix = {"loss": f"{loss.item():.4f}" if loss else "N/A", "task": progress_bar_task}

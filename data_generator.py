@@ -31,6 +31,11 @@ class XESLogLoader:
         self.training_activity_names = []
         self.training_activity_embeddings = None
 
+        # --- 🔻 NEW: Caches for pretrained embeddings 🔻 ---
+        self.activity_embedding_map = {}
+        self.resource_embedding_map = {}
+        # --- 🔺 END NEW 🔺 ---
+
         # Special tokens for vocabularies
         self.PAD_TOKEN = '<PAD>'
         self.UNK_TOKEN = '<UNK>'
@@ -63,6 +68,7 @@ class XESLogLoader:
 
         if not all_activities: raise ValueError("No activities found in training logs.")
         self.training_activity_names = sorted(list(all_activities))
+        all_resource_names = sorted(list(all_resources))  # 🔻 --- NEW --- 🔻
 
         # This map is now only strictly necessary for the 'pretrained' strategy and the
         # embedding quality evaluation, but we create it always for consistency.
@@ -80,6 +86,20 @@ class XESLogLoader:
             self.training_activity_embeddings = self.sbert_model.encode(
                 self.training_activity_names, show_progress_bar=True, normalize_embeddings=True
             )
+            # --- 🔻 NEW: Populate activity embedding map 🔻 ---
+            self.activity_embedding_map = {name: emb for name, emb in zip(
+                self.training_activity_names, self.training_activity_embeddings
+            )}
+
+            # --- 🔻 NEW: Encode and store resource embeddings 🔻 ---
+            print("  - Generating and storing embeddings for all training resources...")
+            resource_embeddings = self.sbert_model.encode(
+                all_resource_names, show_progress_bar=True, normalize_embeddings=True
+            )
+            self.resource_embedding_map = {name: emb for name, emb in zip(
+                all_resource_names, resource_embeddings
+            )}
+            # --- 🔺 END NEW 🔺 ---
 
         print("✅ Fit complete.")
         return self
@@ -155,22 +175,42 @@ class XESLogLoader:
         return raw_log
 
     def _transform_pretrained(self, df, raw_traces, activity_key, resource_key):
+        # --- 🔻 MODIFIED: Start with cached maps 🔻 ---
+        activity_embedding_map = self.activity_embedding_map.copy()
+        resource_embedding_map = self.resource_embedding_map.copy()
+
         current_activities = sorted(list(df[activity_key].unique()))
+        resources_in_log = sorted(list(df[resource_key].fillna('Unknown').unique()))
+
         final_activity_id_map = self.activity_to_id.copy()
-        unseen_activities = [name for name in current_activities if name not in self.activity_to_id]
-        if unseen_activities:
-            unseen_embeddings = self.sbert_model.encode(unseen_activities, normalize_embeddings=True)
-            similarity_matrix = cosine_similarity(unseen_embeddings, self.training_activity_embeddings)
+
+        # --- Handle UNSEEN activities (for classification ID mapping) ---
+        unseen_activities_for_id_map = [name for name in current_activities if name not in self.activity_to_id]
+        if unseen_activities_for_id_map:
+            unseen_id_embeddings = self.sbert_model.encode(unseen_activities_for_id_map, normalize_embeddings=True)
+            similarity_matrix = cosine_similarity(unseen_id_embeddings, self.training_activity_embeddings)
             row_ind, col_ind = linear_sum_assignment(1 - similarity_matrix)
             for r, c in zip(row_ind, col_ind):
-                final_activity_id_map[unseen_activities[r]] = self.activity_to_id[self.training_activity_names[c]]
-        resources_to_embed = sorted(list(df[resource_key].fillna('Unknown').unique()))
-        activity_embedding_map = {name: emb for name, emb in zip(current_activities,
-                                                                 self.sbert_model.encode(current_activities,
-                                                                                         normalize_embeddings=True))}
-        resource_embedding_map = {name: emb for name, emb in zip(resources_to_embed,
-                                                                 self.sbert_model.encode(resources_to_embed,
-                                                                                         normalize_embeddings=True))}
+                final_activity_id_map[unseen_activities_for_id_map[r]] = self.activity_to_id[
+                    self.training_activity_names[c]]
+
+        # --- Handle UNSEEN activities (for embedding map) ---
+        unseen_activities_for_embed = [name for name in current_activities if name not in activity_embedding_map]
+        if unseen_activities_for_embed:
+            print(f"  - Encoding {len(unseen_activities_for_embed)} new activity embeddings...")
+            new_act_embs = self.sbert_model.encode(unseen_activities_for_embed, normalize_embeddings=True)
+            for name, emb in zip(unseen_activities_for_embed, new_act_embs):
+                activity_embedding_map[name] = emb
+
+        # --- Handle UNSEEN resources (for embedding map) ---
+        unseen_resources_for_embed = [name for name in resources_in_log if name not in resource_embedding_map]
+        if unseen_resources_for_embed:
+            print(f"  - Encoding {len(unseen_resources_for_embed)} new resource embeddings...")
+            new_res_embs = self.sbert_model.encode(unseen_resources_for_embed, normalize_embeddings=True)
+            for name, emb in zip(unseen_resources_for_embed, new_res_embs):
+                resource_embedding_map[name] = emb
+        # --- 🔺 END MODIFIED 🔺 ---
+
         log_with_embeddings = []
         unknown_resource_emb = resource_embedding_map.get('Unknown', self.pad_embedding)
         for raw_trace in raw_traces:
