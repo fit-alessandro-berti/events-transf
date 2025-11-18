@@ -295,7 +295,7 @@ if __name__ == '__main__':
 
     # --- Save the final XES log ---
     print(f"\nSaving {len(output_log)} predicted traces to {args.output_file}...")
-    pm4py.write_xes(output_log, args.output_file, compression='gzip' in args.output_file)
+    pm4py.write_xes(output_log, args.output_file, variant_str="line_by_line", compression='gzip' in args.output_file)
     print("Done.")
     print(f"   • repeatedLastActivityPercentage = {output_log.attributes.get('repeatedLastActivityPercentage', 'N/A'):.4f}")
     print(f"   • meanAbsoluteErrorRemainingTime = {output_log.attributes.get('meanAbsoluteErrorRemainingTime', 'N/A'):.4f}")
