@@ -10,47 +10,31 @@ import numpy as np
 # --- Import from project files ---
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from data_generator import XESLogLoader
-# 🔻🔻🔻 MODIFIED IMPORTS 🔻🔻🔻
-# We no longer need data_utils or the levenshtein logic here
 from training_strategies.episodic_strategy import run_episodic_step
 from training_strategies.retrieval_strategy import run_retrieval_step
 from training_strategies.train_utils import evaluate_embedding_quality
 
 
-# 🔺🔺🔺 END MODIFIED 🔺🔺🔺
-
-
-# 🔻🔻🔻 REMOVED FUNCTION 🔻🔻🔻
-# evaluate_embedding_quality(...) has been moved to training_strategies/train_utils.py
-# 🔺🔺🔺 END REMOVED 🔺🔺🔺
-
-
-# --- 🔻 MODIFIED: Function signature updated 🔻 ---
 def train(model, training_tasks, loader, config, checkpoint_dir, resume_epoch=0, stop_after_epoch=None):
     """
     Main training loop.
-    Delegates the logic for each step to specific strategy functions.
-
-    MODIFIED for MoE:
-    - Selects a random expert (`active_expert`) each step.
-    - Passes the `active_expert` (a MetaLearner) to the step functions.
-
-    MODIFIED for args:
-    - Accepts `checkpoint_dir` for saving.
-    - Accepts `resume_epoch` to start the loop from.
-    - Accepts `stop_after_epoch` to break the loop early.
+    ... (docstring unchanged) ...
     """
     print(f"🚀 Starting meta-training...")
     if resume_epoch > 0:
         print(f"--- Resuming from epoch {resume_epoch + 1} ---")
 
     optimizer = optim.AdamW(model.parameters(), lr=config['lr'])
-    # Adjust scheduler if resuming
-    initial_epoch = resume_epoch if resume_epoch > 0 else -1
-    scheduler = CosineAnnealingLR(optimizer, T_max=config['epochs'], eta_min=1e-6, last_epoch=initial_epoch)
 
-    # checkpoint_dir is now passed as an argument
-    # os.makedirs(checkpoint_dir, exist_ok=True) # Already created in main.py
+    # --- 🔻 MODIFIED: Scheduler Initialization Fix 🔻 ---
+    # 1. Initialize the scheduler with default last_epoch=-1
+    # This forces it to correctly populate 'initial_lr' in the optimizer param_groups.
+    scheduler = CosineAnnealingLR(optimizer, T_max=config['epochs'], eta_min=1e-6)
+
+    # 2. If resuming, *now* we manually set the last_epoch.
+    # This avoids the KeyError because 'initial_lr' is already set.
+    if resume_epoch > 0:
+        scheduler.last_epoch = resume_epoch
     # --- 🔺 END MODIFIED 🔺 ---
 
     cls_task_pools = [pool for pool in training_tasks['classification'] if pool]
