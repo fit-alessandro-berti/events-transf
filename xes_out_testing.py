@@ -228,7 +228,8 @@ if __name__ == '__main__':
     loader = init_loader(CONFIG)
     loader.load_training_artifacts(artifacts_path)
 
-    id_to_activity_name = loader.training_activity_names
+    # --- ‼️ DEPRECATED MAP (do not use for local IDs) ---
+    # id_to_activity_name = loader.training_activity_names
 
     model = create_model(CONFIG, loader, device)
     load_model_weights(model, checkpoint_dir, device)
@@ -243,6 +244,21 @@ if __name__ == '__main__':
 
     if not unseen_log:
         exit(f"❌ Error: Test log '{args.test_log_name}' could not be processed.")
+
+    # --- 🔻 NEW: Build the local activity map from the test log 🔻 ---
+    print("Building local activity map for test log...")
+    all_activities_in_log = set(
+        event['activity_name']
+        for trace in unseen_log
+        for event in trace
+        if 'activity_name' in event
+    )
+    # This sorted list is the map. Index 0 is ID 0, Index 1 is ID 1, etc.
+    local_id_to_activity_name = sorted(list(all_activities_in_log))
+    if not local_id_to_activity_name:
+         exit(f"❌ Error: No activity names found in test log '{args.test_log_name}'.")
+    print(f"  - Found {len(local_id_to_activity_name)} unique activities.")
+    # --- 🔺 END NEW 🔺 ---
 
     # --- 2. Generate Tasks and Embeddings ---
     all_tasks = get_all_prefix_tasks(unseen_log)
@@ -305,10 +321,12 @@ if __name__ == '__main__':
             pred_label_idx = torch.argmax(logits, dim=1).item()
             predicted_activity_id = proto_classes[pred_label_idx].item()
 
-            if 0 <= predicted_activity_id < len(id_to_activity_name):
-                predicted_activity_name = id_to_activity_name[predicted_activity_id]
+            # --- 🔻 MODIFIED: Use the local map, not the global one 🔻 ---
+            if 0 <= predicted_activity_id < len(local_id_to_activity_name):
+                predicted_activity_name = local_id_to_activity_name[predicted_activity_id]
             else:
                 predicted_activity_name = "Unknown (Pred. ID)"
+            # --- 🔺 END MODIFIED 🔺 ---
 
             # --- Prediction 2: Remaining Time (Regression) ---
             reg_support_embeddings = all_embeddings_norm[support_indices]
