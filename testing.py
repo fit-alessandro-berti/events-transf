@@ -5,17 +5,14 @@ import os
 import re
 import warnings
 import argparse
+from pathlib import Path  # 🔻 --- NEW IMPORT --- 🔻
 
 # --- Stand-alone execution imports ---
 from config import CONFIG
 from time_transf import inverse_transform_time
 from utils.data_utils import get_task_data
 from utils.model_utils import init_loader, create_model, load_model_weights
-# 🔻 --- MODIFIED IMPORTS --- 🔻
 from evaluation import evaluate_model, evaluate_retrieval_augmented, evaluate_sklearn_baselines, evaluate_pca_knn
-
-# 🔺 --- END MODIFIED --- 🔺
-
 
 if __name__ == '__main__':
 
@@ -38,15 +35,14 @@ if __name__ == '__main__':
     )
     # --- 🔺 END NEW 🔺 ---
 
-    available_test_logs = list(default_config['log_paths']['testing'].keys())
-    default_test_log = available_test_logs[0] if available_test_logs else None
+    # --- 🔻 MODIFIED: Updated test_log_name argument 🔻 ---
     parser.add_argument(
         '--test_log_name',
         type=str,
-        default=default_test_log,
-        choices=available_test_logs,
-        help=f"Name of the test log to evaluate. (default: {default_test_log})"
+        required=True,  # Make it required
+        help="Name of the test log (from config) OR a direct path to a .xes.gz file."
     )
+    # --- 🔺 END MODIFIED 🔺 ---
     parser.add_argument(
         '--test_mode',
         type=str,
@@ -75,19 +71,41 @@ if __name__ == '__main__':
     CONFIG['test_retrieval_k'] = args.test_retrieval_k
 
     print("--- 🚀 Initializing Test Run with Configuration ---")
-    print(f"  - Test Log: {args.test_log_name}")
+
+    # --- 🔻 NEW: Smart log path resolution 🔻 ---
+    log_input = args.test_log_name
+    log_path_to_transform = None
+    log_key_name = None
+
+    log_path_obj = Path(log_input)
+
+    if log_path_obj.exists() and log_path_obj.is_file():
+        print(f"  - Test Log: Found direct path: {log_input}")
+        log_path_to_transform = str(log_path_obj.resolve())
+        # Get the file name and strip extensions like .xes.gz or .xes
+        log_file_name = log_path_obj.name
+        log_key_name = re.sub(r'\.xes(\.gz)?$', '', log_file_name, flags=re.IGNORECASE)
+    else:
+        print(f"  - Test Log: Looking up key in config: {log_input}")
+        log_path_to_transform = CONFIG['log_paths']['testing'].get(log_input)
+        log_key_name = log_input
+
+    if not log_path_to_transform:
+        exit(f"❌ Error: Test log not found. '{log_input}' is not a valid path or config key.")
+
+    if not Path(log_path_to_transform).exists():
+        exit(f"❌ Error: Log file not found at resolved path: {log_path_to_transform}")
+    # --- 🔺 END NEW 🔺 ---
+
     print(f"  - Test Mode: {CONFIG['test_mode']}")
     print(f"  - Test Episodes: {CONFIG['num_test_episodes']}")
-    # --- 🔻 NEW: Print new args 🔻 ---
     print(f"  - Checkpoint Directory: {args.checkpoint_dir}")
     if args.checkpoint_epoch:
         print(f"  - Checkpoint Epoch: {args.checkpoint_epoch}")
     else:
         print("  - Checkpoint Epoch: Latest")
-    # --- 🔺 END NEW 🔺 ---
     if CONFIG['test_mode'] == 'retrieval_augmented':
         print(f"  - Retrieval K-values: {CONFIG['test_retrieval_k']}")
-    # --- 🔺 END MODIFIED 🔺 ---
 
     strategy = CONFIG['embedding_strategy']
     print(f"--- Running Testing Script in Stand-Alone Mode (strategy: '{strategy}') ---")
@@ -103,14 +121,14 @@ if __name__ == '__main__':
     print("\n📦 Loading test data...")
     loader = init_loader(CONFIG)
     loader.load_training_artifacts(artifacts_path)
-    test_log_name = args.test_log_name
-    if not test_log_name:
-        exit("❌ Error: No test log specified or found in config.")
-    log_path = CONFIG['log_paths']['testing'].get(test_log_name)
-    if not log_path:
-        exit(f"❌ Error: Test log key '{test_log_name}' not found in CONFIG['log_paths']['testing'].")
-    log_to_transform = {test_log_name: log_path}
-    print(f"Transforming log: '{test_log_name}' from {log_path}")
+
+    # The new logic block above has already validated and set these:
+    # - log_key_name (the key to use in the dict, e.g., '00013_clos2rep')
+    # - log_path_to_transform (the full, valid path to the file)
+
+    log_to_transform = {log_key_name: log_path_to_transform}
+
+    print(f"Transforming log: '{log_key_name}' from {log_path_to_transform}")
     testing_logs = loader.transform(log_to_transform)
     # --- 🔺 END MODIFIED 🔺 ---
 
@@ -129,9 +147,9 @@ if __name__ == '__main__':
     # --- 🔺 END MODIFIED 🔺 ---
 
     # --- 🔻 MODIFIED: Get correct log 🔻 ---
-    unseen_log = testing_logs.get(test_log_name)
+    unseen_log = testing_logs.get(log_key_name)  # Use the derived key name
     if not unseen_log:
-        exit(f"❌ Error: Test log '{test_log_name}' could not be processed.")
+        exit(f"❌ Error: Test log '{log_key_name}' could not be processed.")
     # --- 🔺 END MODIFIED 🔺 ---
 
     print("\n🛠️ Creating test tasks...")

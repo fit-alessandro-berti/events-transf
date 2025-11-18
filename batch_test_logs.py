@@ -1,21 +1,9 @@
+# File: batch_test_logs.py
 #!/usr/bin/env python3
 """
 batch_test_logs.py
 
-Standalone script that runs testing.py on every log in ./logs whose filename
-starts with at least four zeros (0000…).
-
-Usage example:
-    python batch_test_logs.py \
-        --checkpoint_dir ./checkpoints/run42 \
-        --test_mode meta_learning \
-        --test_log_name D_unseen
-
-Optional arguments (all are optional except --checkpoint_dir if you want a meaningful name):
-    --checkpoint_dir      Required for meaningful output filenames
-    --checkpoint_epoch    If given, uses this specific epoch (otherwise "latest")
-    --test_log_name       Name of the test log as defined in config.py (default: first in testing)
-    --test_mode           meta_learning or retrieval_augmented (default: from CONFIG)
+... (docstring unchanged) ...
 """
 
 import os
@@ -43,7 +31,7 @@ def main():
     parser.add_argument("--checkpoint_epoch", type=int, default=None,
                         help="Specific epoch to test (default: latest)")
     parser.add_argument("--test_log_name", type=str, default=None,
-                        help="Name of the test log as defined in config.py['log_paths']['testing']")
+                        help="Name of the test log as defined in config.py['log_paths']['testing'] (can be overridden by --test_mode)")
     parser.add_argument("--test_mode", type=str, default=None,
                         choices=["meta_learning", "retrieval_augmented"],
                         help="Test mode (default: whatever is currently in CONFIG)")
@@ -89,6 +77,8 @@ def main():
     if args.checkpoint_epoch is not None:
         cmd_base += ["--checkpoint_epoch", str(args.checkpoint_epoch)]
 
+    # This argument will be overridden in the loop, but if the loop
+    # logic changes, it's good to have a default.
     if args.test_log_name:
         cmd_base += ["--test_log_name", args.test_log_name]
 
@@ -110,7 +100,7 @@ def main():
     # ------------------------------------------------------------------
     for log_path in target_logs:
         # The actual log name without path/extension (used only for the output filename)
-        log_stem = log_path.stem  # everything until .xes.gz
+        log_stem = re.sub(r'\.xes(\.gz)?$', '', log_path.name, flags=re.IGNORECASE)
         log_part = alphanumeric(log_stem)
 
         # Build the final output filename
@@ -119,8 +109,11 @@ def main():
 
         print(f"Testing {log_path.name} → {out_path.name}")
 
-        # Full command for this specific log
-        cmd = cmd_base + ["--test_log_name", log_stem]  # testing.py expects the key defined in config
+        # --- 🔻 MODIFIED: Pass the full path to testing.py 🔻 ---
+        # We pass the full path string. testing.py now accepts this.
+        # This replaces any default --test_log_name from cmd_base.
+        cmd = cmd_base + ["--test_log_name", str(log_path)]
+        # --- 🔺 END MODIFIED 🔺 ---
 
         # Run and capture everything
         try:
