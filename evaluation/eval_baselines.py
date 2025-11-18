@@ -1,5 +1,6 @@
 # File: evaluation/eval_baselines.py
 import torch
+import torch.nn.functional as F
 import numpy as np
 import random
 from collections import defaultdict
@@ -7,39 +8,84 @@ from sklearn.metrics import accuracy_score, mean_absolute_error, r2_score
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.exceptions import ConvergenceWarning
 import warnings
+from tqdm import tqdm
 
 # --- Import from project files ---
 from config import CONFIG
 from time_transf import inverse_transform_time
 
 
-def _extract_features_for_sklearn(trace, model, strategy):
+# --- 🔻 NEW HELPER FUNCTION (Copied from eval_retrieval.py) 🔻 ---
+def _get_all_test_embeddings(model, test_tasks_list, batch_size=64):
     """
-    Extracts a feature vector from a trace for use in sklearn models.
-    (Moved from testing.py)
+    Helper function to compute embeddings for all (prefix, label, case_id) tuples.
+    This is for pre-computing features for the sklearn baseline.
+
+    MODIFIED for MoE:
+    - Calls `model._process_batch`, which in `MoEModel` will return
+      the *average* embedding from all experts.
     """
-    if strategy == 'learned':
-        # Use the trained model to get a high-quality representation
-        model.eval()
-        with torch.no_grad():
-            encoded_vector = model._process_batch([trace])
-            return encoded_vector.squeeze(0).cpu().numpy()
-    else:  # pretrained
-        # Use a simple mean of pre-computed embeddings
-        event_vectors = []
-        for event in trace:
-            semantic_vec = event['activity_embedding'] + event['resource_embedding']
-            numerical_vec = np.log1p([event['cost'], event['time_from_start'], event['time_from_previous']])
-            event_vectors.append(np.concatenate([semantic_vec, numerical_vec]))
-        if not event_vectors:
-            return np.zeros(CONFIG['pretrained_settings']['embedding_dim'] + CONFIG['num_numerical_features'])
-        return np.mean(np.array(event_vectors), axis=0)
+    all_embeddings = []
+    all_labels = []
+    all_case_ids = []
+
+    device = next(model.parameters()).device
+    model.eval()
+
+    try:
+        # Check if data has 3 items (prefix, label, case_id)
+        _ = test_tasks_list[0][2]
+    except (IndexError, TypeError):
+        print("\n" + "=" * 50)
+        print("❌ ERROR in _get_all_test_embeddings (sklearn baseline):")
+        print("Test data does not contain case_ids.")
+        print("This evaluation requires (prefix, label, case_id) tuples.")
+        print("=" * 50 + "\n")
+        return None, None, None
+
+    with torch.no_grad():
+        for i in tqdm(range(0, len(test_tasks_list), batch_size), desc="Pre-computing test embeddings (for sklearn)"):
+            batch_tasks = test_tasks_list[i:i + batch_size]
+            sequences = [t[0] for t in batch_tasks]
+            labels = [t[1] for t in batch_tasks]
+            case_ids = [t[2] for t in batch_tasks]  # We don't use this, but it's in the data
+
+            if not sequences: continue
+
+            # Use the model's internal processing function
+            # For MoEModel, this returns the average embedding
+            encoded_batch = model._process_batch(sequences)
+
+            all_embeddings.append(encoded_batch.cpu())
+            all_labels.extend(labels)
+            all_case_ids.extend(case_ids)
+
+    if not all_embeddings:
+        return None, None, None
+
+    all_embeddings_tensor = torch.cat(all_embeddings, dim=0).to(device)
+    all_labels_tensor = torch.as_tensor(all_labels, device=device)
+    # We return the tensors, as they are easier to index
+    return all_embeddings_tensor, all_labels_tensor
+
+
+# --- 🔺 END NEW HELPER 🔺 ---
+
+
+# --- 🔻 REMOVED FUNCTION 🔻 ---
+# def _extract_features_for_sklearn(trace, model, strategy):
+#     """ (This slow function is no longer needed) """
+# --- 🔺 END REMOVED FUNCTION 🔺 ---
 
 
 def evaluate_sklearn_baselines(model, test_tasks, num_shots_list, num_test_episodes=100):
     """
     Evaluates simple sklearn models on the same episodic tasks.
-    (Moved from testing.py)
+
+    --- 🚀 OPTIMIZED VERSION 🚀 ---
+    This version pre-computes all embeddings for the test set *once*,
+    then samples from those pre-computed vectors, avoiding
+    running the model inside the episode loop.
     """
     strategy = model.strategy
     print(f"\n🧪 Starting evaluation of Scikit-Learn Baselines (feature extraction: '{strategy}')...")
@@ -47,49 +93,75 @@ def evaluate_sklearn_baselines(model, test_tasks, num_shots_list, num_test_episo
     # Suppress warnings from sklearn models
     warnings.filterwarnings("ignore", category=ConvergenceWarning)
 
-    for task_type, task_data in test_tasks.items():
-        print(f"\n--- Baseline task: {task_type} ---")
-        if not task_data:
-            print(f"Skipping {task_type}: No test data available.")
-            continue
+    # --- 🔻 NEW: Pre-compute all embeddings 🔻 ---
+    task_embeddings = {}
+    with torch.no_grad():
+        model.eval()  # Ensure model is in eval mode for embedding
+        for task_type, task_data in test_tasks.items():
+            if not task_data:
+                print(f"Skipping {task_type}: No test data available.")
+                continue
 
-        # Re-build class_dict for sampling (to handle regression case)
+            print(f"Pre-computing embeddings for sklearn {task_type}...")
+            embeddings, labels = _get_all_test_embeddings(model, task_data)
+
+            if embeddings is None:
+                return  # Error already printed in helper
+
+            task_embeddings[task_type] = (embeddings, labels)
+    # --- 🔺 END NEW 🔺 ---
+
+    for task_type, data in task_embeddings.items():
+        print(f"\n--- Baseline task: {task_type} ---")
+
+        all_embeddings, all_labels = data
+        all_labels_np = all_labels.cpu().numpy()
+        all_embeddings_np = all_embeddings.cpu().numpy()
+
+        task_indices = list(range(len(all_labels_np)))
+
+        # Re-build class_dict for sampling, but store *indices*
         if task_type == 'classification':
             class_dict = defaultdict(list)
-            # Assumes task_data is (prefix, label) or (prefix, label, case_id)
-            for task_item in task_data:
-                seq, label = task_item[0], task_item[1]
-                class_dict[label].append((seq, label))
+            for i, label in enumerate(all_labels_np):
+                class_dict[label].append(i)  # Store the index
+
             class_dict = {c: items for c, items in class_dict.items() if len(items) >= max(num_shots_list) + 1}
-            if len(class_dict.keys()) < 2: continue
+            if len(class_dict.keys()) < 2:
+                print("Skipping: Not enough classes with sufficient samples.")
+                continue
             N_WAYS_TEST = min(len(class_dict.keys()), 7)
 
         for k in num_shots_list:
-            all_preds, all_labels = [], []
+            all_preds, all_labels_in_test = [], []
             for _ in range(num_test_episodes):
-                support_set, query_set = [], []
+
+                support_indices, query_indices = [], []
+
                 if task_type == 'classification':
                     eligible_classes = [c for c, items in class_dict.items() if len(items) >= k + 1]
                     if len(eligible_classes) < N_WAYS_TEST: continue
                     episode_classes = random.sample(eligible_classes, N_WAYS_TEST)
-                    for cls in episode_classes:
-                        samples = random.sample(class_dict[cls], k + 1)
-                        support_set.extend(samples[:k]);
-                        query_set.append(samples[k])
-                else:  # Regression
-                    # Regression: task_data is a list of (prefix, label, case_id)
-                    if len(task_data) < k + 1: continue
-                    random.shuffle(task_data)
-                    support_set_raw, query_set_raw = task_data[:k], task_data[k:k + 1]
-                    support_set = [(s[0], s[1]) for s in support_set_raw]
-                    query_set = [(q[0], q[1]) for q in query_set_raw]
-                if not support_set or not query_set: continue
 
-                # Use the feature extraction helper
-                X_train = np.array([_extract_features_for_sklearn(s[0], model, strategy) for s in support_set])
-                y_train = np.array([s[1] for s in support_set])
-                X_test = np.array([_extract_features_for_sklearn(q[0], model, strategy) for q in query_set])
-                y_test = np.array([q[1] for q in query_set])
+                    for cls in episode_classes:
+                        samples_indices = random.sample(class_dict[cls], k + 1)
+                        support_indices.extend(samples_indices[:k])
+                        query_indices.append(samples_indices[k])
+
+                else:  # Regression
+                    if len(task_indices) < k + 1: continue
+                    random.shuffle(task_indices)
+                    support_indices = task_indices[:k]
+                    query_indices = task_indices[k:k + 1]
+
+                if not support_indices or not query_indices: continue
+
+                # --- 🔻 OPTIMIZED: Get features from pre-computed arrays 🔻 ---
+                X_train = all_embeddings_np[support_indices]
+                y_train = all_labels_np[support_indices]
+                X_test = all_embeddings_np[query_indices]
+                y_test = all_labels_np[query_indices]
+                # --- 🔺 END OPTIMIZED 🔺 ---
 
                 if task_type == 'classification':
                     if len(np.unique(y_train)) < 2: continue
@@ -98,16 +170,20 @@ def evaluate_sklearn_baselines(model, test_tasks, num_shots_list, num_test_episo
                     sk_model = Ridge()
                 try:
                     sk_model.fit(X_train, y_train)
-                    all_preds.extend(sk_model.predict(X_test));
-                    all_labels.extend(y_test)
+                    all_preds.extend(sk_model.predict(X_test))
+                    all_labels_in_test.extend(y_test)
                 except ValueError:
                     continue
-            if not all_labels: continue
+
+            if not all_labels_in_test:
+                print(f"[{k}-shot] No valid episodes were run.")
+                continue
+
             if task_type == 'classification':
-                print(f"[{k}-shot] Logistic Regression Accuracy: {accuracy_score(all_labels, all_preds):.4f}")
+                print(f"[{k}-shot] Logistic Regression Accuracy: {accuracy_score(all_labels_in_test, all_preds):.4f}")
             else:
-                preds = inverse_transform_time(np.array(all_preds));
+                preds = inverse_transform_time(np.array(all_preds))
                 preds[preds < 0] = 0
-                labels = inverse_transform_time(np.array(all_labels))
+                labels = inverse_transform_time(np.array(all_labels_in_test))
                 print(
                     f"[{k}-shot] Ridge Regression MAE: {mean_absolute_error(labels, preds):.4f} | R-squared: {r2_score(labels, preds):.4f}")
