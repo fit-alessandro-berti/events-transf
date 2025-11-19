@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Event Log Features Schema",
+  "description": "A schema for describing features in event logs, with boolean flags for presence of control-flow, temporal, resource, and cost-related patterns.",
+  "type": "object",
+  "properties": {
+    "control_flow": {
+      "type": "object",
+      "properties": {
+        "linear_with_inserts": {
+          "type": "boolean",
+          "default": false
+        },
+        "xor_branch": {
+          "type": "boolean",
+          "default": false
+        },
+        "loop_rework": {
+          "type": "boolean",
+          "default": false
+        },
+        "and_split_join": {
+          "type": "boolean",
+          "default": false
+        },
+        "or_split_join": {
+          "type": "boolean",
+          "default": false
+        },
+        "skip": {
+          "type": "boolean",
+          "default": false
+        },
+        "long_term_dependency": {
+          "type": "boolean",
+          "default": false
+        },
+        "preemption": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "temporal": {
+      "type": "object",
+      "properties": {
+        "heavy_tailed_times": {
+          "type": "boolean",
+          "default": false
+        },
+        "bursty_arrivals": {
+          "type": "boolean",
+          "default": false
+        },
+        "work_calendars": {
+          "type": "boolean",
+          "default": false
+        },
+        "resource_shifts_ot": {
+          "type": "boolean",
+          "default": false
+        },
+        "aging_deadlines_escalate": {
+          "type": "boolean",
+          "default": false
+        },
+        "setup_similar_prev_act_res": {
+          "type": "boolean",
+          "default": false
+        },
+        "interrupt_resume": {
+          "type": "boolean",
+          "default": false
+        },
+        "sync_latency": {
+          "type": "boolean",
+          "default": false
+        },
+        "queueing": {
+          "type": "boolean",
+          "default": false
+        },
+        "seasonality_drift": {
+          "type": "boolean",
+          "default": false
+        },
+        "learning_forgetting": {
+          "type": "boolean",
+          "default": false
+        },
+        "batching": {
+          "type": "boolean",
+          "default": false
+        },
+        "multi_instance": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "resource": {
+      "type": "object",
+      "properties": {
+        "roles_pools_slow_alts_escalate": {
+          "type": "boolean",
+          "default": false
+        },
+        "skill_rework_prob": {
+          "type": "boolean",
+          "default": false
+        },
+        "binding_of_duty": {
+          "type": "boolean",
+          "default": false
+        },
+        "separation_of_duty": {
+          "type": "boolean",
+          "default": false
+        },
+        "handover_on_switch": {
+          "type": "boolean",
+          "default": false
+        },
+        "unavail_reassign_xor": {
+          "type": "boolean",
+          "default": false
+        },
+        "assign_random_loaded_skill_mix": {
+          "type": "boolean",
+          "default": false
+        },
+        "multi_res_meetings": {
+          "type": "boolean",
+          "default": false
+        },
+        "vendor_xor_budget": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "cost": {
+      "type": "object",
+      "properties": {
+        "fixed_var_dur_shift": {
+          "type": "boolean",
+          "default": false
+        },
+        "sla_penalty": {
+          "type": "boolean",
+          "default": false
+        },
+        "rework_escalation": {
+          "type": "boolean",
+          "default": false
+        },
+        "expedite_jump_skip": {
+          "type": "boolean",
+          "default": false
+        },
+        "handover_fee": {
+          "type": "boolean",
+          "default": false
+        },
+        "cancel_refund": {
+          "type": "boolean",
+          "default": false
+        },
+        "material_fixed": {
+          "type": "boolean",
+          "default": false
+        },
+        "budget_simplify_vendor": {
+          "type": "boolean",
+          "default": false
+        },
+        "wait_holding": {
+          "type": "boolean",
+          "default": false
+        },
+        "drift_tariffs": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "control_flow",
+    "temporal",
+    "resource",
+    "cost"
+  ],
+  "additionalProperties": false
+}

@@ -2,10 +2,12 @@ Provide a CSV containing the following columns:
 - log_name
 - k_of_shots
 - our_accuracy_class
+- our_confidence_class
 - our_mae
 - our_r_squared
+- our_confidence_predict
 - sklearn_accuracy_class
 - sklearn_mae
 - sklearn_r_squared
 
-from the following log file:
+from the following log file (chk_episodic_d128.txt). It should include all the 13 different event logs in the testing.
