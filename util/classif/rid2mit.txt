@@ -1,0 +1,52 @@
+{
+  "process_name": "Risk Identification to Mitigation",
+  "process_description": "A synthetic process simulating risk identification, assessment, root cause analysis, mitigation planning and execution, verification, approval, and case closure, with incorporated control-flow patterns, temporal dynamics, resource management, and cost calculations.",
+  "control_flow": {
+    "linear_with_inserts": true,
+    "xor_branch": true,
+    "loop_rework": true,
+    "and_split_join": true,
+    "or_split_join": true,
+    "skip": true,
+    "long_term_dependency": true,
+    "preemption": true
+  },
+  "temporal": {
+    "heavy_tailed_times": true,
+    "bursty_arrivals": true,
+    "work_calendars": true,
+    "resource_shifts_ot": true,
+    "aging_deadlines_escalate": true,
+    "setup_similar_prev_act_res": true,
+    "interrupt_resume": true,
+    "sync_latency": true,
+    "queueing": true,
+    "seasonality_drift": true,
+    "learning_forgetting": true,
+    "batching": true,
+    "multi_instance": true
+  },
+  "resource": {
+    "roles_pools_slow_alts_escalate": true,
+    "skill_rework_prob": true,
+    "binding_of_duty": true,
+    "separation_of_duty": true,
+    "handover_on_switch": true,
+    "unavail_reassign_xor": true,
+    "assign_random_loaded_skill_mix": true,
+    "multi_res_meetings": true,
+    "vendor_xor_budget": true
+  },
+  "cost": {
+    "fixed_var_dur_shift": true,
+    "sla_penalty": true,
+    "rework_escalation": true,
+    "expedite_jump_skip": true,
+    "handover_fee": true,
+    "cancel_refund": true,
+    "material_fixed": true,
+    "budget_simplify_vendor": true,
+    "wait_holding": true,
+    "drift_tariffs": true
+  }
+}

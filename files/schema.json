@@ -1,9 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Event Log Features Schema",
-  "description": "A schema for describing features in event logs, with boolean flags for presence of control-flow, temporal, resource, and cost-related patterns.",
+  "description": "A schema for describing features in event logs, with boolean flags for presence of control-flow, temporal, resource, and cost-related patterns, along with inferred process name and description.",
   "type": "object",
   "properties": {
+    "process_name": {
+      "type": "string",
+      "description": "The inferred name of the process (e.g., Order-to-Cash, Procure-to-Pay)."
+    },
+    "process_description": {
+      "type": "string",
+      "description": "A brief inferred description of the process."
+    },
     "control_flow": {
       "type": "object",
       "properties": {
@@ -190,6 +198,8 @@
     }
   },
   "required": [
+    "process_name",
+    "process_description",
     "control_flow",
     "temporal",
     "resource",
