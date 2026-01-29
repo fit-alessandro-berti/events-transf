@@ -1,6 +1,11 @@
 import argparse
 import random
-from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    wait,
+    FIRST_COMPLETED,
+    as_completed,
+)
 from pathlib import Path
 
 import pm4py
@@ -194,6 +199,7 @@ def main():
     )
     parser.add_argument(
         "--threads",
+        "--num-threads",
         type=int,
         default=0,
         help="Number of worker threads (0 = auto).",
@@ -257,7 +263,8 @@ def main():
                 failures.append((index, "Timeout"))
                 print(f"Log {index + 1} timed out and was skipped.")
         else:
-            for future, (index, _output_path) in futures.items():
+            for future in as_completed(futures):
+                index, _output_path = futures[future]
                 try:
                     result_path = future.result()
                     print(f"Simulated log saved to: {result_path}")
