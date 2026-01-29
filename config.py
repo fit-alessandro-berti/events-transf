@@ -85,3 +85,13 @@ CONFIG = {
     'num_test_episodes': 200,
     'num_cases_for_testing': 500,
 }
+
+# Add all simulated logs in LOG_DIR to the training log paths.
+if os.path.isdir(LOG_DIR):
+    simulated_logs = [
+        name for name in os.listdir(LOG_DIR)
+        if name.startswith('simulated_log')
+        and os.path.isfile(os.path.join(LOG_DIR, name))
+    ]
+    for name in sorted(simulated_logs):
+        CONFIG['log_paths']['training'][name] = os.path.join(LOG_DIR, name)
