@@ -148,6 +148,9 @@ def simulate_single_log(index, output_path, args, max_attempts_per_log):
             "Try reducing silent activity probability or increasing max attempts."
         )
 
+    for case_index, trace in enumerate(simulated_log):
+        trace.attributes["concept:name"] = str(case_index)
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     pm4py.write_xes(simulated_log, str(output_path), variant_str="line_by_line")
     return output_path
