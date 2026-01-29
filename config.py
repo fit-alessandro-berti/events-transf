@@ -86,21 +86,21 @@ CONFIG = {
     'num_cases_for_testing': 500,
 }
 
-# Add all simulated logs in LOG_DIR/log to the training log paths.
-LOG_SUBDIR = os.path.join(LOG_DIR, 'log')
-if os.path.isdir(LOG_SUBDIR):
-    # If LOG_DIR/log exists and is not empty, remove the current training logs.
+# Add all logs in LOG_DIR/out to the training log paths.
+OUT_DIR = os.path.join(LOG_DIR, 'out')
+if os.path.isdir(OUT_DIR):
+    # If LOG_DIR/out exists and is not empty, remove the current training logs.
     replaced_training_logs = False
-    if os.listdir(LOG_SUBDIR):
+    if os.listdir(OUT_DIR):
         CONFIG['log_paths']['training'] = {}
         replaced_training_logs = True
-    simulated_logs = [
-        name for name in os.listdir(LOG_SUBDIR)
-        if name.startswith('simulated_log')
-        and os.path.isfile(os.path.join(LOG_SUBDIR, name))
+    out_logs = [
+        name for name in os.listdir(OUT_DIR)
+        if (name.startswith('log_') or name.startswith('simulated_'))
+        and os.path.isfile(os.path.join(OUT_DIR, name))
     ]
-    for name in sorted(simulated_logs):
-        CONFIG['log_paths']['training'][name] = os.path.join(LOG_SUBDIR, name)
+    for name in sorted(out_logs):
+        CONFIG['log_paths']['training'][name] = os.path.join(OUT_DIR, name)
     if replaced_training_logs:
-        print('Replaced training logs with simulated logs from:', LOG_SUBDIR)
+        print('Replaced training logs with logs from:', OUT_DIR)
         print('Training logs:', CONFIG['log_paths']['training'])
