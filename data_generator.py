@@ -153,6 +153,9 @@ class XESLogLoader:
 
     def _convert_df_to_raw_traces(self, df, case_id_key, activity_key, timestamp_key, resource_key, cost_key):
         raw_log = []
+        if case_id_key not in df.columns:
+            df = df.reset_index(drop=True).copy()
+            df[case_id_key] = [f"C{i + 1}" for i in range(len(df))]
         df[timestamp_key] = pd.to_datetime(df[timestamp_key]).dt.tz_localize(None)
         df[resource_key] = df[resource_key].fillna('Unknown')
         for case_id, trace_df in df.groupby(case_id_key):
