@@ -90,8 +90,10 @@ CONFIG = {
 LOG_SUBDIR = os.path.join(LOG_DIR, 'log')
 if os.path.isdir(LOG_SUBDIR):
     # If LOG_DIR/log exists and is not empty, remove the current training logs.
+    replaced_training_logs = False
     if os.listdir(LOG_SUBDIR):
         CONFIG['log_paths']['training'] = {}
+        replaced_training_logs = True
     simulated_logs = [
         name for name in os.listdir(LOG_SUBDIR)
         if name.startswith('simulated_log')
@@ -99,3 +101,6 @@ if os.path.isdir(LOG_SUBDIR):
     ]
     for name in sorted(simulated_logs):
         CONFIG['log_paths']['training'][name] = os.path.join(LOG_SUBDIR, name)
+    if replaced_training_logs:
+        print('Replaced training logs with simulated logs from:', LOG_SUBDIR)
+        print('Training logs:', CONFIG['log_paths']['training'])
