@@ -60,7 +60,9 @@ class XESLogLoader:
         for _, path in training_log_paths.items():
             if not os.path.exists(path): continue
             try:
-                df = pm4py.convert_to_dataframe(pm4py.read_xes(path, variant="iterparse"))
+                df = pm4py.read_xes(path, variant="rustxes")
+                if not resource_key in df:
+                    df[resource_key] = "Unknown"
                 all_activities.update(df[activity_key].unique())
                 all_resources.update(df[resource_key].fillna('Unknown').unique())
             except Exception as e:
