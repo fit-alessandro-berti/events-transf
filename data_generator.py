@@ -60,7 +60,7 @@ class XESLogLoader:
         for _, path in training_log_paths.items():
             if not os.path.exists(path): continue
             try:
-                df = pm4py.read_xes(path, variant="rustxes")
+                df = pm4py.read_xes(path)
                 if not resource_key in df:
                     df[resource_key] = "Unknown"
                 all_activities.update(df[activity_key].unique())
@@ -110,8 +110,11 @@ class XESLogLoader:
                   timestamp_key='time:timestamp', resource_key='org:resource', cost_key='amount'):
         if not self.training_activity_names: raise RuntimeError("Loader has not been fitted.")
         print(f"\nTransforming logs: {list(log_paths.keys())}")
-        all_dfs = [pm4py.convert_to_dataframe(pm4py.read_xes(path)) for path in log_paths.values() if
+        all_dfs = [pm4py.read_xes(path) for path in log_paths.values() if
                    os.path.exists(path)]
+        for i in range(len(all_dfs)):
+            if not resource_key in all_dfs[i]:
+                all_dfs[i][resource_key] = "Unknown"
         if not all_dfs: return {}
         combined_df = pd.concat(all_dfs, keys=log_paths.keys(), names=['log_name', 'orig_index']).reset_index()
         processed_logs = {}
