@@ -158,7 +158,8 @@ class XESLogLoader:
 
     def _convert_df_to_raw_traces(self, df, case_id_key, activity_key, timestamp_key, resource_key, cost_key):
         raw_log = []
-        df[timestamp_key] = pd.to_datetime(df[timestamp_key]).dt.tz_localize(None)
+        df[timestamp_key] = pd.to_datetime(df[timestamp_key], errors='coerce').dt.tz_localize(None)
+        df = df.dropna(subset=[timestamp_key])
         df[resource_key] = df[resource_key].fillna('Unknown')
         for case_id, trace_df in df.groupby(case_id_key):
             trace_df = trace_df.sort_values(by=timestamp_key)
@@ -166,8 +167,9 @@ class XESLogLoader:
             trace, start_time, prev_time = [], trace_df.iloc[0][timestamp_key], trace_df.iloc[0][timestamp_key]
             for _, event in trace_df.iterrows():
                 current_time = event[timestamp_key]
-                cost_val = event.get(cost_key, round(random.uniform(5.0, 100.0), 2))
-                if not isinstance(cost_val, (int, float)): cost_val = round(random.uniform(5.0, 100.0), 2)
+                cost_val = event.get(cost_key, 0.0)
+                if not isinstance(cost_val, (int, float)) or pd.isna(cost_val):
+                    cost_val = 0.0
                 event_dict = {
                     'case_id': case_id, 'activity': event[activity_key], 'timestamp': current_time.timestamp(),
                     'resource': event[resource_key], 'cost': cost_val,
