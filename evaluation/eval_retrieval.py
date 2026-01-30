@@ -18,7 +18,7 @@ from utils.retrieval_utils import find_knn_indices
 def _report_similarity_metrics(embeddings: torch.Tensor, labels: torch.Tensor, max_knn_queries=1000, knn_k_list=(5, 10)):
     """
     Reports quick, mean-aggregated similarity metrics for classification embeddings.
-    Assumes embeddings are L2-normalized.
+    Uses mean-centered cosine similarity to reduce anisotropy effects.
     """
     if embeddings.numel() == 0 or labels.numel() == 0:
         print("  - Similarity metrics: skipped (empty embeddings/labels).")
@@ -27,6 +27,11 @@ def _report_similarity_metrics(embeddings: torch.Tensor, labels: torch.Tensor, m
     device = embeddings.device
     labels = labels.to(device)
 
+    # Mean-center then re-normalize to reduce cosine anisotropy
+    mean_emb = embeddings.mean(dim=0, keepdim=True)
+    centered = embeddings - mean_emb
+    centered = F.normalize(centered, p=2, dim=1)
+
     # Build centroids via scatter-add for speed
     unique_labels, inverse = torch.unique(labels, sorted=True, return_inverse=True)
     num_classes = unique_labels.numel()
@@ -34,16 +39,16 @@ def _report_similarity_metrics(embeddings: torch.Tensor, labels: torch.Tensor, m
         print(f"  - Similarity metrics: skipped (num_classes={num_classes}).")
         return
 
-    n, d = embeddings.shape
+    n, d = centered.shape
     centroids = torch.zeros((num_classes, d), device=device)
     counts = torch.zeros((num_classes,), device=device)
-    centroids.scatter_add_(0, inverse[:, None].expand(-1, d), embeddings)
+    centroids.scatter_add_(0, inverse[:, None].expand(-1, d), centered)
     counts.scatter_add_(0, inverse, torch.ones((n,), device=device))
     centroids = centroids / counts[:, None].clamp_min(1.0)
     centroids = F.normalize(centroids, p=2, dim=1)
 
     # 1) Intra-class cohesion: cosine to own centroid
-    sims_to_own = (embeddings * centroids[inverse]).sum(dim=1)
+    sims_to_own = (centered * centroids[inverse]).sum(dim=1)
     intra_mean = sims_to_own.mean().item()
 
     # 2) Inter-class centroid cosine (mean over pairs)
@@ -52,7 +57,7 @@ def _report_similarity_metrics(embeddings: torch.Tensor, labels: torch.Tensor, m
     inter_mean = centroid_sims[triu_idx[0], triu_idx[1]].mean().item()
 
     # 3) Margin: sim to own centroid minus max sim to other centroids
-    sims_all = embeddings @ centroids.T
+    sims_all = centered @ centroids.T
     sims_all[torch.arange(n, device=device), inverse] = -float('inf')
     max_other = sims_all.max(dim=1).values
     margin_mean = (sims_to_own - max_other).mean().item()
@@ -65,9 +70,9 @@ def _report_similarity_metrics(embeddings: torch.Tensor, labels: torch.Tensor, m
     else:
         query_idx = torch.arange(n, device=device)
 
-    query_emb = embeddings[query_idx]
+    query_emb = centered[query_idx]
     query_labels = labels[query_idx]
-    sims = query_emb @ embeddings.T
+    sims = query_emb @ centered.T
     sims[torch.arange(max_queries, device=device), query_idx] = -float('inf')
 
     for k in knn_k_list:
@@ -81,7 +86,7 @@ def _report_similarity_metrics(embeddings: torch.Tensor, labels: torch.Tensor, m
         knn_purity[k] = purity
 
     print(
-        "  - Similarity metrics (mean): "
+        "  - Similarity metrics (mean, mean-centered cosine): "
         f"intra_centroid_cos={intra_mean:.4f} | "
         f"inter_centroid_cos={inter_mean:.4f} | "
         f"centroid_margin={margin_mean:.4f} | "
