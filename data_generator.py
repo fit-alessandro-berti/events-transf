@@ -255,3 +255,58 @@ class XESLogLoader:
         elif self.strategy == 'learned':
             self.char_to_id = artifacts['char_to_id']
         print(f"✅ Training artifacts loaded successfully from {path}")
+
+
+def _summarize_processed_log(log_name, log, max_traces=2, max_events=5):
+    total_events = sum(len(trace) for trace in log)
+    case_ids = {trace[0].get('case_id') for trace in log if trace}
+    print(f"\nLog '{log_name}': traces={len(log)}, events={total_events}, cases={len(case_ids)}")
+    if not log:
+        return
+
+    for t_idx, trace in enumerate(log[:max_traces], start=1):
+        if not trace:
+            continue
+        case_id = trace[0].get('case_id')
+        print(f"  Trace {t_idx}: case_id={case_id}, events={len(trace)}")
+
+        for e_idx, event in enumerate(trace[:max_events], start=1):
+            if 'activity_name' in event:
+                print(
+                    f"    {e_idx}. act={event.get('activity_name')} | res={event.get('resource_name')} "
+                    f"| t={event.get('timestamp')}"
+                )
+            else:
+                act_emb = event.get('activity_embedding')
+                res_emb = event.get('resource_embedding')
+                act_dim = int(getattr(act_emb, "shape", [0])[0]) if act_emb is not None else 0
+                res_dim = int(getattr(res_emb, "shape", [0])[0]) if res_emb is not None else 0
+                print(
+                    f"    {e_idx}. activity_id={event.get('activity_id')} | emb_dim={act_dim} "
+                    f"| res_dim={res_dim} | t={event.get('timestamp')}"
+                )
+
+
+if __name__ == "__main__":
+    test_mode = CONFIG.get('test_mode')
+    if test_mode != 'retrieval_augmented':
+        print(f"Note: CONFIG['test_mode'] is '{test_mode}', not 'retrieval_augmented'.")
+
+    print("\n--- Data Generator Debug: Retrieval-Augmented Test Logs ---")
+    print(f"Embedding strategy: {CONFIG.get('embedding_strategy')}")
+
+    train_logs = CONFIG.get('log_paths', {}).get('training', {})
+    test_logs = CONFIG.get('log_paths', {}).get('testing', {})
+    print(f"Training logs: {list(train_logs.keys())}")
+    print(f"Testing logs: {list(test_logs.keys())}")
+
+    loader = XESLogLoader(
+        strategy=CONFIG['embedding_strategy'],
+        sbert_model_name=CONFIG['pretrained_settings']['sbert_model']
+    )
+
+    loader.fit(train_logs)
+    processed_test_logs = loader.transform(test_logs)
+
+    for log_name, log in processed_test_logs.items():
+        _summarize_processed_log(log_name, log)
