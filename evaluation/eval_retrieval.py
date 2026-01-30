@@ -15,6 +15,80 @@ from utils.retrieval_utils import find_knn_indices
 # 🔺 END NEW 🔺
 
 
+def _report_similarity_metrics(embeddings: torch.Tensor, labels: torch.Tensor, max_knn_queries=1000, knn_k_list=(5, 10)):
+    """
+    Reports quick, mean-aggregated similarity metrics for classification embeddings.
+    Assumes embeddings are L2-normalized.
+    """
+    if embeddings.numel() == 0 or labels.numel() == 0:
+        print("  - Similarity metrics: skipped (empty embeddings/labels).")
+        return
+
+    device = embeddings.device
+    labels = labels.to(device)
+
+    # Build centroids via scatter-add for speed
+    unique_labels, inverse = torch.unique(labels, sorted=True, return_inverse=True)
+    num_classes = unique_labels.numel()
+    if num_classes < 2:
+        print(f"  - Similarity metrics: skipped (num_classes={num_classes}).")
+        return
+
+    n, d = embeddings.shape
+    centroids = torch.zeros((num_classes, d), device=device)
+    counts = torch.zeros((num_classes,), device=device)
+    centroids.scatter_add_(0, inverse[:, None].expand(-1, d), embeddings)
+    counts.scatter_add_(0, inverse, torch.ones((n,), device=device))
+    centroids = centroids / counts[:, None].clamp_min(1.0)
+    centroids = F.normalize(centroids, p=2, dim=1)
+
+    # 1) Intra-class cohesion: cosine to own centroid
+    sims_to_own = (embeddings * centroids[inverse]).sum(dim=1)
+    intra_mean = sims_to_own.mean().item()
+
+    # 2) Inter-class centroid cosine (mean over pairs)
+    centroid_sims = centroids @ centroids.T
+    triu_idx = torch.triu_indices(num_classes, num_classes, offset=1, device=device)
+    inter_mean = centroid_sims[triu_idx[0], triu_idx[1]].mean().item()
+
+    # 3) Margin: sim to own centroid minus max sim to other centroids
+    sims_all = embeddings @ centroids.T
+    sims_all[torch.arange(n, device=device), inverse] = -float('inf')
+    max_other = sims_all.max(dim=1).values
+    margin_mean = (sims_to_own - max_other).mean().item()
+
+    # 4) kNN purity (sampled for speed)
+    knn_purity = {}
+    max_queries = min(max_knn_queries, n)
+    if max_queries < n:
+        query_idx = torch.randperm(n, device=device)[:max_queries]
+    else:
+        query_idx = torch.arange(n, device=device)
+
+    query_emb = embeddings[query_idx]
+    query_labels = labels[query_idx]
+    sims = query_emb @ embeddings.T
+    sims[torch.arange(max_queries, device=device), query_idx] = -float('inf')
+
+    for k in knn_k_list:
+        k_eff = min(k, n - 1)
+        if k_eff <= 0:
+            knn_purity[k] = float('nan')
+            continue
+        topk_idx = torch.topk(sims, k_eff, dim=1).indices
+        neighbor_labels = labels[topk_idx]
+        purity = (neighbor_labels == query_labels[:, None]).float().mean().item()
+        knn_purity[k] = purity
+
+    print(
+        "  - Similarity metrics (mean): "
+        f"intra_centroid_cos={intra_mean:.4f} | "
+        f"inter_centroid_cos={inter_mean:.4f} | "
+        f"centroid_margin={margin_mean:.4f} | "
+        + " ".join([f"knn_purity@{k}={knn_purity[k]:.4f}" for k in knn_k_list])
+    )
+
+
 def _get_all_test_embeddings(model, test_tasks_list, batch_size=64):
     """
     Helper function to compute embeddings for all (prefix, label, case_id) tuples.
@@ -142,6 +216,11 @@ def evaluate_retrieval_augmented(
 
         # L2-normalize for efficient cosine similarity
         embeddings = F.normalize(embeddings, p=2, dim=1)
+
+        # Report quick similarity metrics for classification only
+        if task_type == 'classification':
+            _report_similarity_metrics(embeddings, labels)
+
         task_embeddings[task_type] = (embeddings, labels, case_ids)  # Store all 3
         print(f"  - Pre-computed {embeddings.shape[0]} embeddings for {task_type}.")
 
