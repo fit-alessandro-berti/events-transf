@@ -74,7 +74,13 @@ def _get_all_test_embeddings(model, test_tasks_list, batch_size=64):
     return all_embeddings_tensor, all_labels_tensor, all_case_ids_array
 
 
-def evaluate_retrieval_augmented(model, test_tasks, num_retrieval_k_list, num_test_queries=200):
+def evaluate_retrieval_augmented(
+    model,
+    test_tasks,
+    num_retrieval_k_list,
+    num_test_queries=200,
+    candidate_percentages=None
+):
     """
     Retrieval-Augmented evaluation.
     (Moved from testing.py)
@@ -82,9 +88,15 @@ def evaluate_retrieval_augmented(model, test_tasks, num_retrieval_k_list, num_te
     1. Computes all test embeddings (uses avg. expert embedding for MoE).
     2. For each query, finds k-NN *from other cases* to form the support set.
     3. Uses the proto_head from the *first expert* to make predictions.
+
+    candidate_percentages: list of percentages of the candidate pool to sample
+    for k-NN (100 = full pool).
     """
     print("\n🔬 Starting Retrieval-Augmented Evaluation...")
     model.eval()
+
+    if not candidate_percentages:
+        candidate_percentages = [100]
 
     # --- 🔻 MoE Fix 🔻 ---
     # The retrieval eval is tightly coupled to the MetaLearner's proto_head.
@@ -127,111 +139,147 @@ def evaluate_retrieval_augmented(model, test_tasks, num_retrieval_k_list, num_te
         num_queries = min(num_test_queries, num_total_samples)
         query_indices = random.sample(range(num_total_samples), num_queries)
 
-        for k in num_retrieval_k_list:
-            # Need at least k+1 samples (1 query, k support) *from different cases*
-            # This check is complex, so we'll just check if k < N
-            if k >= num_total_samples:
-                print(f"Skipping [k={k}]: k is larger than total samples.")
-                continue
+        for pct in candidate_percentages:
+            print(f"\n  - Candidate pool sampling: {pct}%")
 
-            # 🔻 MODIFIED: Store preds and confidences 🔻
-            all_preds, all_true_labels, all_confidences = [], [], []
-            # 🔺 END MODIFIED 🔺
-
-            for query_idx in query_indices:
-                query_embedding = all_embeddings[query_idx:query_idx + 1]  # [1, D]
-                query_label = all_labels[query_idx]
-                query_case_id = all_case_ids[query_idx]  # <-- Get query case_id
-
-                # 🔻🔻🔻 REFACTORED BLOCK 🔻🔻🔻
-                # --- Find k-NN Support Set ---
-
-                # --- CONTAMINATION FIX ---
-                # Find all indices that share the same case ID as the query
-                same_case_indices_np = np.where(all_case_ids == query_case_id)[0]
-                mask_tensor = torch.from_numpy(same_case_indices_np).to(query_embedding.device)
-                # --- END FIX ---
-
-                # Use the new helper function
-                # Note: query_embedding and all_embeddings are already normalized
-                top_k_indices = find_knn_indices(
-                    query_embedding,
-                    all_embeddings,
-                    k=k,
-                    indices_to_mask=mask_tensor
+            # Sample a global candidate pool once per percentage for consistent k comparisons
+            if pct >= 100:
+                non_candidate_indices_tensor = None
+            elif pct <= 0:
+                non_candidate_indices_tensor = torch.arange(
+                    num_total_samples,
+                    device=all_embeddings.device,
+                    dtype=torch.long
                 )
-
-                if top_k_indices.numel() == 0:
-                    continue  # Not enough valid support items found
-
-                # 🔺🔺🔺 END REFACTORED BLOCK 🔺🔺🔺
-
-                support_embeddings = all_embeddings[top_k_indices]  # [k, D]
-                support_labels = all_labels[top_k_indices]  # [k]
-
-                # --- Get Prediction ---
-                with torch.no_grad():
-                    if task_type == 'classification':
-                        # --- 🔻 MoE Fix 🔻 ---
-                        logits, proto_classes, confidence = proto_head_to_use.forward_classification(
-                            support_embeddings, support_labels, query_embedding
-                        )
-                        # --- 🔺 End MoE Fix 🔺 ---
-
-                        if logits is None: continue  # Should not happen if top_k_indices.numel() > 0
-
-                        # --- "NO INVALID QUERIES" FIX ---
-                        # Get the index of the top logit (e.g., 0, 1, 2...)
-                        pred_label_idx = torch.argmax(logits, dim=1).item()
-
-                        # 🔻 MODIFIED: Get confidence for the predicted class 🔻
-                        # Index [0, pred_label_idx] to handle [1,C] shape
-                        pred_confidence = confidence[0, pred_label_idx].item()
-                        # 🔺 END MODIFIED 🔺
-
-                        # Find the *actual* class label (e.g., "Activity C")
-                        # that corresponds to this index
-                        predicted_class_label = proto_classes[pred_label_idx].item()
-
-                        all_preds.append(predicted_class_label)
-                        all_true_labels.append(query_label.item())
-                        # 🔻 MODIFIED: Store confidence 🔻
-                        all_confidences.append(pred_confidence)
-                        # 🔺 END MODIFIED 🔺
-                        # --- END FIX ---
-
-                    else:  # Regression
-                        # --- 🔻 MoE Fix 🔻 ---
-                        prediction, confidence = proto_head_to_use.forward_regression(
-                            support_embeddings, support_labels.float(), query_embedding
-                        )
-                        # --- 🔺 End MoE Fix 🔺 ---
-
-                        # 🔻 MODIFIED: Index [0] for single-item tensors 🔻
-                        all_preds.append(prediction[0].item())
-                        all_true_labels.append(query_label.item())
-                        # 🔻 MODIFIED: Store confidence 🔻
-                        all_confidences.append(confidence[0].item())
-                        # 🔺 END MODIFIED 🔺
-
-            if not all_true_labels: continue
-
-            # --- 3. Report Metrics ---
-            if task_type == 'classification':
-                # 🔻 MODIFIED: Report confidence 🔻
-                avg_conf = np.mean(all_confidences)
-                print(
-                    f"[{k}-NN] Retrieval Accuracy: {accuracy_score(all_true_labels, all_preds):.4f} | Avg. Confidence: {avg_conf:.4f} (on {len(all_true_labels)} queries)")
-                # 🔺 END MODIFIED 🔺
             else:
-                # 🔻 MODIFIED: Report confidence 🔻
-                preds_np = np.array(all_preds)
-                labels_np = np.array(all_true_labels)
-                avg_conf = np.mean(all_confidences)
+                sample_size = int(np.ceil(num_total_samples * (pct / 100.0)))
+                sample_size = max(1, min(sample_size, num_total_samples))
+                if sample_size == num_total_samples:
+                    non_candidate_indices_tensor = None
+                else:
+                    candidate_pool_indices = np.random.choice(
+                        num_total_samples,
+                        size=sample_size,
+                        replace=False
+                    )
+                    mask_np = np.ones(num_total_samples, dtype=bool)
+                    mask_np[candidate_pool_indices] = False
+                    non_candidate_indices_tensor = torch.from_numpy(
+                        np.where(mask_np)[0]
+                    ).to(all_embeddings.device)
 
-                preds = inverse_transform_time(preds_np);
-                preds[preds < 0] = 0
-                labels = inverse_transform_time(labels_np)
-                print(
-                    f"[{k}-NN] Retrieval MAE: {mean_absolute_error(labels, preds):.4f} | R-squared: {r2_score(labels, preds):.4f} | Avg. Confidence: {avg_conf:.4f}")
+            for k in num_retrieval_k_list:
+                # Need at least k+1 samples (1 query, k support) *from different cases*
+                # This check is complex, so we'll just check if k < N
+                if k >= num_total_samples:
+                    print(f"Skipping [k={k} | pct={pct}%]: k is larger than total samples.")
+                    continue
+
+                # 🔻 MODIFIED: Store preds and confidences 🔻
+                all_preds, all_true_labels, all_confidences = [], [], []
                 # 🔺 END MODIFIED 🔺
+
+                for query_idx in query_indices:
+                    query_embedding = all_embeddings[query_idx:query_idx + 1]  # [1, D]
+                    query_label = all_labels[query_idx]
+
+                    query_case_id = all_case_ids[query_idx]
+                    same_case_indices_np = np.where(all_case_ids == query_case_id)[0]
+
+                    if non_candidate_indices_tensor is None:
+                        if same_case_indices_np.size == 0:
+                            mask_tensor = None
+                        else:
+                            mask_tensor = torch.from_numpy(same_case_indices_np).to(all_embeddings.device)
+                    else:
+                        if same_case_indices_np.size == 0:
+                            mask_tensor = non_candidate_indices_tensor
+                        else:
+                            same_case_tensor = torch.from_numpy(same_case_indices_np).to(all_embeddings.device)
+                            mask_tensor = torch.cat([non_candidate_indices_tensor, same_case_tensor])
+
+                    # Use the new helper function
+                    # Note: query_embedding and all_embeddings are already normalized
+                    top_k_indices = find_knn_indices(
+                        query_embedding,
+                        all_embeddings,
+                        k=k,
+                        indices_to_mask=mask_tensor
+                    )
+
+                    if top_k_indices.numel() == 0:
+                        continue  # Not enough valid support items found
+
+                    # 🔺🔺🔺 END REFACTORED BLOCK 🔺🔺🔺
+
+                    support_embeddings = all_embeddings[top_k_indices]  # [k, D]
+                    support_labels = all_labels[top_k_indices]  # [k]
+
+                    # --- Get Prediction ---
+                    with torch.no_grad():
+                        if task_type == 'classification':
+                            # --- 🔻 MoE Fix 🔻 ---
+                            logits, proto_classes, confidence = proto_head_to_use.forward_classification(
+                                support_embeddings, support_labels, query_embedding
+                            )
+                            # --- 🔺 End MoE Fix 🔺 ---
+
+                            if logits is None: continue  # Should not happen if top_k_indices.numel() > 0
+
+                            # --- "NO INVALID QUERIES" FIX ---
+                            # Get the index of the top logit (e.g., 0, 1, 2...)
+                            pred_label_idx = torch.argmax(logits, dim=1).item()
+
+                            # 🔻 MODIFIED: Get confidence for the predicted class 🔻
+                            # Index [0, pred_label_idx] to handle [1,C] shape
+                            pred_confidence = confidence[0, pred_label_idx].item()
+                            # 🔺 END MODIFIED 🔺
+
+                            # Find the *actual* class label (e.g., "Activity C")
+                            # that corresponds to this index
+                            predicted_class_label = proto_classes[pred_label_idx].item()
+
+                            all_preds.append(predicted_class_label)
+                            all_true_labels.append(query_label.item())
+                            # 🔻 MODIFIED: Store confidence 🔻
+                            all_confidences.append(pred_confidence)
+                            # 🔺 END MODIFIED 🔺
+                            # --- END FIX ---
+
+                        else:  # Regression
+                            # --- 🔻 MoE Fix 🔻 ---
+                            prediction, confidence = proto_head_to_use.forward_regression(
+                                support_embeddings, support_labels.float(), query_embedding
+                            )
+                            # --- 🔺 End MoE Fix 🔺 ---
+
+                            # 🔻 MODIFIED: Index [0] for single-item tensors 🔻
+                            all_preds.append(prediction[0].item())
+                            all_true_labels.append(query_label.item())
+                            # 🔻 MODIFIED: Store confidence 🔻
+                            all_confidences.append(confidence[0].item())
+                            # 🔺 END MODIFIED 🔺
+
+                if not all_true_labels:
+                    print(f"Skipping [k={k} | pct={pct}%]: no valid queries.")
+                    continue
+
+                # --- 3. Report Metrics ---
+                if task_type == 'classification':
+                    # 🔻 MODIFIED: Report confidence 🔻
+                    avg_conf = np.mean(all_confidences)
+                    print(
+                        f"[{k}-NN | pct={pct}%] Retrieval Accuracy: {accuracy_score(all_true_labels, all_preds):.4f} | Avg. Confidence: {avg_conf:.4f} (on {len(all_true_labels)} queries)")
+                    # 🔺 END MODIFIED 🔺
+                else:
+                    # 🔻 MODIFIED: Report confidence 🔻
+                    preds_np = np.array(all_preds)
+                    labels_np = np.array(all_true_labels)
+                    avg_conf = np.mean(all_confidences)
+
+                    preds = inverse_transform_time(preds_np);
+                    preds[preds < 0] = 0
+                    labels = inverse_transform_time(labels_np)
+                    print(
+                        f"[{k}-NN | pct={pct}%] Retrieval MAE: {mean_absolute_error(labels, preds):.4f} | R-squared: {r2_score(labels, preds):.4f} | Avg. Confidence: {avg_conf:.4f}")
+                    # 🔺 END MODIFIED 🔺

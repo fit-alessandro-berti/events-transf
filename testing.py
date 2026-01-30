@@ -63,12 +63,20 @@ if __name__ == '__main__':
         default=default_config['test_retrieval_k'],
         help=f"List of k-values for retrieval-augmented mode. (default: {default_config['test_retrieval_k']})"
     )
+    parser.add_argument(
+        '--test_retrieval_candidate_percentages',
+        type=float,
+        nargs='+',
+        default=default_config.get('test_retrieval_candidate_percentages', [100]),
+        help="List of candidate-pool sampling percentages for retrieval-augmented mode."
+    )
     args = parser.parse_args()
 
     # --- Update CONFIG with parsed arguments ---
     CONFIG['test_mode'] = args.test_mode
     CONFIG['num_test_episodes'] = args.num_test_episodes
     CONFIG['test_retrieval_k'] = args.test_retrieval_k
+    CONFIG['test_retrieval_candidate_percentages'] = args.test_retrieval_candidate_percentages
 
     print("--- 🚀 Initializing Test Run with Configuration ---")
 
@@ -123,6 +131,7 @@ if __name__ == '__main__':
         print("  - Checkpoint Epoch: Latest")
     if CONFIG['test_mode'] == 'retrieval_augmented':
         print(f"  - Retrieval K-values: {CONFIG['test_retrieval_k']}")
+        print(f"  - Retrieval Candidate %: {CONFIG['test_retrieval_candidate_percentages']}")
 
     strategy = CONFIG['embedding_strategy']
     print(f"--- Running Testing Script in Stand-Alone Mode (strategy: '{strategy}') ---")
@@ -185,7 +194,11 @@ if __name__ == '__main__':
     if test_mode == 'retrieval_augmented':
         print("\n--- Running in Retrieval-Augmented Evaluation Mode ---")
         evaluate_retrieval_augmented(
-            model, test_tasks, k_list_retrieval, CONFIG['num_test_episodes']
+            model,
+            test_tasks,
+            k_list_retrieval,
+            CONFIG['num_test_episodes'],
+            CONFIG.get('test_retrieval_candidate_percentages')
         )
         print("\n--- Running PCA-kNN Baseline Comparison ---")
         evaluate_pca_knn(

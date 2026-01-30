@@ -82,6 +82,7 @@ CONFIG = {
     #                        k-NN for the support set.
     'test_mode': 'meta_learning',
     'test_retrieval_k': [1, 5, 10, 20], # k-values for retrieval_augmented mode
+    'test_retrieval_candidate_percentages': [100], # % of candidate pool to sample for k-NN
     'num_test_episodes': 200,
     'num_cases_for_testing': 500,
 }
