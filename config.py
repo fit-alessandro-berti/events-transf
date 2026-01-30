@@ -80,28 +80,29 @@ CONFIG = {
     # 'meta_learning':       Standard episodic evaluation (default).
     # 'retrieval_augmented': Pre-compute all test embeddings, then use
     #                        k-NN for the support set.
-    'test_mode': 'meta_learning',
+    'test_mode': 'retrieval_augmented',
     'test_retrieval_k': [1, 5, 10, 20], # k-values for retrieval_augmented mode
     'test_retrieval_candidate_percentages': [100], # % of candidate pool to sample for k-NN
     'num_test_episodes': 200,
     'num_cases_for_testing': 500,
 }
 
-# Add all logs in LOG_DIR/out to the training log paths.
-OUT_DIR = os.path.join(LOG_DIR, 'out')
-if os.path.isdir(OUT_DIR):
-    # If LOG_DIR/out exists and is not empty, remove the current training logs.
-    replaced_training_logs = False
-    if os.listdir(OUT_DIR):
-        CONFIG['log_paths']['training'] = {}
-        replaced_training_logs = True
-    out_logs = [
-        name for name in os.listdir(OUT_DIR)
-        if (name.startswith('log_') or name.startswith('simulated_'))
-        and os.path.isfile(os.path.join(OUT_DIR, name))
-    ]
-    for name in sorted(out_logs):
-        CONFIG['log_paths']['training'][name] = os.path.join(OUT_DIR, name)
-    if replaced_training_logs:
-        print('Replaced training logs with logs from:', OUT_DIR)
-        print('Training logs:', CONFIG['log_paths']['training'])
+if False:
+    # Add all logs in LOG_DIR/out to the training log paths.
+    OUT_DIR = os.path.join(LOG_DIR, 'out')
+    if os.path.isdir(OUT_DIR):
+        # If LOG_DIR/out exists and is not empty, remove the current training logs.
+        replaced_training_logs = False
+        if os.listdir(OUT_DIR):
+            CONFIG['log_paths']['training'] = {}
+            replaced_training_logs = True
+        out_logs = [
+            name for name in os.listdir(OUT_DIR)
+            if (name.startswith('log_') or name.startswith('simulated_'))
+            and os.path.isfile(os.path.join(OUT_DIR, name))
+        ]
+        for name in sorted(out_logs):
+            CONFIG['log_paths']['training'][name] = os.path.join(OUT_DIR, name)
+        if replaced_training_logs:
+            print('Replaced training logs with logs from:', OUT_DIR)
+            print('Training logs:', CONFIG['log_paths']['training'])
