@@ -122,6 +122,24 @@ def evaluate_retrieval_augmented(
         if embeddings is None:  # Error already printed in helper
             return
 
+        # --- Quick sanity checks ---
+        try:
+            has_nan = torch.isnan(embeddings).any().item()
+            all_finite = torch.isfinite(embeddings).all().item()
+            print(f"  - Embedding sanity: has_nan={has_nan}, all_finite={all_finite}")
+        except Exception as e:
+            print(f"  - Embedding sanity check failed: {e}")
+
+        if case_ids is not None:
+            unique_cases, case_counts = np.unique(case_ids, return_counts=True)
+            print(f"  - Case ID stats: unique_cases={len(unique_cases)}, total_tasks={len(case_ids)}")
+            if len(unique_cases) > 0:
+                top_k = min(5, len(unique_cases))
+                top_idx = np.argsort(case_counts)[-top_k:][::-1]
+                top_cases = [(unique_cases[i], int(case_counts[i])) for i in top_idx]
+                print(f"  - Top case_id counts: {top_cases}")
+        # --- End sanity checks ---
+
         # L2-normalize for efficient cosine similarity
         embeddings = F.normalize(embeddings, p=2, dim=1)
         task_embeddings[task_type] = (embeddings, labels, case_ids)  # Store all 3
@@ -167,6 +185,7 @@ def evaluate_retrieval_augmented(
                     non_candidate_indices_tensor = torch.from_numpy(
                         np.where(mask_np)[0]
                     ).to(all_embeddings.device)
+                print(f"  - Candidate pool size: {sample_size} / {num_total_samples}")
 
             for k in num_retrieval_k_list:
                 # Need at least k+1 samples (1 query, k support) *from different cases*
