@@ -14,10 +14,6 @@ from training_strategies .retrieval_strategy import run_retrieval_step
 from training_strategies .train_utils import evaluate_embedding_quality
 def train (model ,training_tasks ,loader ,config ,checkpoint_dir ,resume_epoch =0 ,stop_after_epoch =None ,
 cleanup_checkpoints =False ):
-    """
-    Main training loop.
-    ... (docstring unchanged) ...
-    """
     print (f"🚀 Starting meta-training...")
     if resume_epoch >0 :
         print (f"--- Resuming from epoch {resume_epoch +1 } ---")

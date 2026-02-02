@@ -1,18 +1,9 @@
-"""
-batch_test_logs.py
-Batch-run testing.py on all logs starting with at least THREE leading zeros.
-Features:
-- Output directory: testing_output/<checkpoint_name>[_<epoch>]
-- Skips already-processed files → perfect for resuming
-- Includes epoch in folder name only when explicitly given
-"""
 import re
 import argparse
 import subprocess
 import sys
 from pathlib import Path
 def alphanumeric (s :str )->str :
-    """Keep only alphanumeric chars and underscore (spaces → underscore)"""
     return re .sub (r"[^a-zA-Z0-9_]","",s .replace (" ","_"))
 def main ():
     parser =argparse .ArgumentParser (

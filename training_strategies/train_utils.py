@@ -8,10 +8,6 @@ try :
 except ImportError :
     levenshtein_distance =None
 def evaluate_embedding_quality (model ,loader :XESLogLoader ):
-    """
-    Evaluates the quality of learned embeddings by comparing string distance
-    (Levenshtein) to cosine similarity in the embedding space.
-    """
     if model .strategy !='learned':
         return
     if levenshtein_distance is None :

@@ -13,51 +13,13 @@ from evaluation import evaluate_model ,evaluate_retrieval_augmented ,evaluate_sk
 if __name__ =='__main__':
     parser =argparse .ArgumentParser (description ="Run the meta-learning model evaluation script.")
     default_config =CONFIG
-    parser .add_argument (
-    '--checkpoint_dir',
-    type =str ,
-    default ='./checkpoints',
-    help ="Directory to load checkpoints and artifacts from."
-    )
-    parser .add_argument (
-    '--checkpoint_epoch',
-    type =int ,
-    default =None ,
-    help ="Specific epoch checkpoint to test (e.g., 1, 5). Defaults to the latest."
-    )
-    parser .add_argument (
-    '--test_log_name',
-    type =str ,
-    required =True ,
-    help ="Name of the test log (from config) OR a direct path to a .xes.gz file."
-    )
-    parser .add_argument (
-    '--test_mode',
-    type =str ,
-    default =default_config ['test_mode'],
-    choices =['meta_learning','retrieval_augmented'],
-    help =f"Evaluation mode. (default: {default_config ['test_mode']})"
-    )
-    parser .add_argument (
-    '--num_test_episodes',
-    type =int ,
-    default =default_config ['num_test_episodes'],
-    help =f"Number of episodes to run for testing. (default: {default_config ['num_test_episodes']})"
-    )
-    parser .add_argument (
-    '--test_retrieval_k',
-    type =int ,
-    nargs ='+',
-    default =default_config ['test_retrieval_k'],
-    help =f"List of k-values for retrieval-augmented mode. (default: {default_config ['test_retrieval_k']})"
-    )
-    parser .add_argument (
-    '--test_retrieval_candidate_percentages',
-    type =float ,
-    nargs ='+',
-    default =default_config .get ('test_retrieval_candidate_percentages',[100 ]),
-    help ="List of candidate-pool sampling percentages for retrieval-augmented mode."
-    )
+    parser .add_argument ('--checkpoint_dir',type =str ,default ='./checkpoints',help ="Directory to load checkpoints and artifacts from.")
+    parser .add_argument ('--checkpoint_epoch',type =int ,default =None ,help ="Specific epoch checkpoint to test (e.g., 1, 5). Defaults to the latest.")
+    parser .add_argument ('--test_log_name',type =str ,required =True ,help ="Name of the test log (from config) OR a direct path to a .xes.gz file.")
+    parser .add_argument ('--test_mode',type =str ,default =default_config ['test_mode'],choices =['meta_learning','retrieval_augmented'],help =f"Evaluation mode. (default: {default_config ['test_mode']})")
+    parser .add_argument ('--num_test_episodes',type =int ,default =default_config ['num_test_episodes'],help =f"Number of episodes to run for testing. (default: {default_config ['num_test_episodes']})")
+    parser .add_argument ('--test_retrieval_k',type =int ,nargs ='+',default =default_config ['test_retrieval_k'],help =f"List of k-values for retrieval-augmented mode. (default: {default_config ['test_retrieval_k']})")
+    parser .add_argument ('--test_retrieval_candidate_percentages',type =float ,nargs ='+',default =default_config .get ('test_retrieval_candidate_percentages',[100 ]),help ="List of candidate-pool sampling percentages for retrieval-augmented mode.")
     args =parser .parse_args ()
     CONFIG ['test_mode']=args .test_mode
     CONFIG ['num_test_episodes']=args .num_test_episodes

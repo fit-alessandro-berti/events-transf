@@ -9,11 +9,6 @@ from sklearn .metrics .pairwise import cosine_similarity
 from scipy .optimize import linear_sum_assignment
 from config import CONFIG
 class XESLogLoader :
-    """
-    Handles data loading and processing based on the chosen embedding strategy.
-    - 'pretrained': Generates fixed semantic embeddings using a pre-trained model.
-    - 'learned': Creates a character vocabulary to generate embeddings on-the-fly.
-    """
     def __init__ (self ,strategy :str ,sbert_model_name :str ='all-MiniLM-L6-v2'):
         self .strategy =strategy
         print (f"Data loader initialized with strategy: '{self .strategy }'")
@@ -36,9 +31,6 @@ class XESLogLoader :
                 raise RuntimeError (f"Pretrained strategy requires SentenceTransformer: {e }")
             self .pad_embedding =np .zeros (self .sbert_embedding_dim ,dtype =np .float32 )
     def fit (self ,training_log_paths :dict ,activity_key ='concept:name',resource_key ='org:resource'):
-        """
-        Fits on training data to create either embeddings or vocabularies.
-        """
         print (f"Fitting on training data (strategy: '{self .strategy }')...")
         all_activities ,all_resources =set (),set ()
         for _ ,path in training_log_paths .items ():
@@ -101,10 +93,6 @@ class XESLogLoader :
         print ("✅ Transformation complete.")
         return processed_logs
     def _transform_learned (self ,raw_traces ):
-        """
-        Passes raw strings and creates a dynamic, local mapping for labels.
-        This ensures that even unseen logs can be used for classification tasks.
-        """
         all_activities_in_log =set (event ['activity']for trace in raw_traces for event in trace )
         local_activity_to_id ={name :i for i ,name in enumerate (sorted (list (all_activities_in_log )))}
         log_with_strings =[]

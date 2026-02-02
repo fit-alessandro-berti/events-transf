@@ -14,16 +14,6 @@ from utils .model_utils import init_loader ,create_model ,load_model_weights
 from utils .retrieval_utils import find_knn_indices
 warnings .filterwarnings ("ignore",category =UserWarning ,module ='pm4py')
 def get_all_prefix_tasks (log ,max_seq_len =10 ):
-    """
-    Generates a list of all possible prefix tasks from a log.
-    Returns a list of dicts, where each dict contains:
-    - 'prefix': The list of event dictionaries.
-    - 'cls_label': The ground-truth activity_id of the *next* event.
-    - 'reg_label': The ground-truth (transformed) remaining time.
-    - 'case_id': The original case ID.
-    - 'actual_next_activity_name': The ground-truth *name* of the next activity.
-    - 'actual_remaining_time_hr': The ground-truth *untransformed* remaining time.
-    """
     print ("🛠️ Generating all prefix tasks from log...")
     tasks =[]
     if not log :return tasks
@@ -55,9 +45,6 @@ def get_all_prefix_tasks (log ,max_seq_len =10 ):
     print (f"✅ Generated {len (tasks )} prefix tasks.")
     return tasks
 def compute_all_embeddings (model ,all_prefixes ,batch_size =64 ):
-    """
-    Computes embeddings for all prefixes in batches.
-    """
     print ("🧠 Computing embeddings for all prefixes...")
     device =next (model .parameters ()).device
     model .eval ()
@@ -78,9 +65,6 @@ def compute_all_embeddings (model ,all_prefixes ,batch_size =64 ):
 def create_xes_trace (prefix_events ,new_case_id ,
 pred_rem_time ,pred_activity_name ,
 actual_rem_time ,actual_next_activity ):
-    """
-    Creates a single pm4py Trace object from a prefix and predictions.
-    """
     new_trace =pm4py .objects .log .obj .Trace ()
     new_trace .attributes ['concept:name']=new_case_id
     last_event_timestamp =None
@@ -115,32 +99,10 @@ if __name__ =='__main__':
     default_config =CONFIG
     available_test_logs =list (default_config ['log_paths']['testing'].keys ())
     default_test_log =available_test_logs [0 ]if available_test_logs else None
-    parser .add_argument (
-    '--output_file',
-    type =str ,
-    required =True ,
-    help ="Path to save the output XES log (e.g., 'predictions.xes.gz')."
-    )
-    parser .add_argument (
-    '--test_log_name',
-    type =str ,
-    default =default_test_log ,
-    choices =available_test_logs ,
-    help =f"Name of the test log to process. (default: {default_test_log })"
-    )
-    parser .add_argument (
-    '--test_mode',
-    type =str ,
-    default ='retrieval_augmented',
-    choices =['meta_learning','retrieval_augmented'],
-    help =f"Evaluation mode. (default: retrieval_augmented)"
-    )
-    parser .add_argument (
-    '--inference_k',
-    type =int ,
-    default =default_config ['test_retrieval_k'][0 ],
-    help ="The 'k' to use for k-NN support set retrieval."
-    )
+    parser .add_argument ('--output_file',type =str ,required =True ,help ="Path to save the output XES log (e.g., 'predictions.xes.gz').")
+    parser .add_argument ('--test_log_name',type =str ,default =default_test_log ,choices =available_test_logs ,help =f"Name of the test log to process. (default: {default_test_log })")
+    parser .add_argument ('--test_mode',type =str ,default ='retrieval_augmented',choices =['meta_learning','retrieval_augmented'],help =f"Evaluation mode. (default: retrieval_augmented)")
+    parser .add_argument ('--inference_k',type =int ,default =default_config ['test_retrieval_k'][0 ],help ="The 'k' to use for k-NN support set retrieval.")
     args =parser .parse_args ()
     if args .test_mode !='retrieval_augmented':
         print (f"❌ Error: This script requires 'retrieval_augmented' mode to build support sets for inference.")

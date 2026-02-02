@@ -7,10 +7,6 @@ from .pretrained_event_embedder import PretrainedEventEmbedder
 from .event_encoder import EventEncoder
 from .prototypical_head import PrototypicalHead
 class MetaLearner (nn .Module ):
-    """
-    Combines embedder, encoder, and prototypical head for meta-learning.
-    The internal embedder is chosen based on the specified strategy.
-    """
     def __init__ (self ,strategy :str ,num_feat_dim :int ,d_model :int ,n_heads :int ,n_layers :int ,dropout :float =0.1 ,**kwargs ):
         super ().__init__ ()
         self .strategy =strategy
@@ -38,7 +34,6 @@ class MetaLearner (nn .Module ):
         else :
             raise ValueError (f"Unknown embedding strategy: '{self .strategy }'")
     def set_char_vocab (self ,char_to_id :dict ):
-        """Passes the character vocabulary to the learned embedder."""
         if self .strategy =='learned':
             self .embedder .char_to_id =char_to_id
             print ("Character vocabulary set in LearnedEventEmbedder.")

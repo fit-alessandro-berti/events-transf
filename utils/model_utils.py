@@ -6,16 +6,11 @@ from data_generator import XESLogLoader
 from components .meta_learner import MetaLearner
 from components .moe_model import MoEModel
 def init_loader (config ):
-    """Initializes and returns an XESLogLoader based on the config."""
     strategy =config ['embedding_strategy']
     sbert_model_name =config ['pretrained_settings']['sbert_model']
     loader =XESLogLoader (strategy =strategy ,sbert_model_name =sbert_model_name )
     return loader
 def create_model (config ,loader ,device ):
-    """
-    Initializes the MoEModel (which wraps MetaLearner(s))
-    based on the config and loader.
-    """
     strategy =config ['embedding_strategy']
     moe_config =config .get ('moe_settings',{})
     num_experts =moe_config .get ('num_experts',1 )
@@ -43,14 +38,6 @@ def create_model (config ,loader ,device ):
         model .set_char_vocab (loader .char_to_id )
     return model
 def load_model_weights (model ,checkpoint_dir ,device ,epoch_num =None ):
-    """
-    Finds the latest checkpoint (or a specific one) and loads its weights.
-    Args:
-        model (nn.Module): The model to load weights into.
-        checkpoint_dir (str): The directory containing checkpoints.
-        device (torch.device): The device to map weights to.
-        epoch_num (int, optional): Specific epoch to load. If None, loads latest.
-    """
     if not os .path .isdir (checkpoint_dir ):
         exit (f"❌ Error: Checkpoint directory not found at {checkpoint_dir }")
     checkpoint_path =None

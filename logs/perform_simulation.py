@@ -128,62 +128,15 @@ def simulate_single_log (index ,output_path ,args ,max_attempts_per_log ):
     pm4py .write_xes (simulated_log ,str (output_path ),variant_str ="line_by_line")
     return output_path
 def main ():
-    parser =argparse .ArgumentParser (
-    description ="PTAndLogGenerator -> Petri net -> Monte Carlo simulation with stochastic map."
-    )
-    parser .add_argument (
-    "--output",
-    default ="simulated_log.xes",
-    help =(
-    "File or directory where simulated XES logs are stored. "
-    "If multiple logs are requested, numbered files are created."
-    ),
-    )
-    parser .add_argument (
-    "--seed",
-    type =int ,
-    default =17 ,
-    help ="Random seed for reproducibility.",
-    )
-    parser .add_argument (
-    "--num-logs",
-    type =int ,
-    default =5 ,
-    help ="Number of event logs to simulate.",
-    )
-    parser .add_argument (
-    "--traces-per-log",
-    "--num-simulations",
-    dest ="traces_per_log",
-    type =int ,
-    default =50 ,
-    help ="Number of traces (cases) to simulate per log.",
-    )
-    parser .add_argument (
-    "--case-arrival-ratio",
-    type =float ,
-    default =3600.0 ,
-    help ="Average case inter-arrival time in seconds.",
-    )
-    parser .add_argument (
-    "--base-traces",
-    type =int ,
-    default =50 ,
-    help ="Traces in the base log used to seed the simulation.",
-    )
-    parser .add_argument (
-    "--threads",
-    "--num-threads",
-    type =int ,
-    default =0 ,
-    help ="Number of worker threads (0 = auto).",
-    )
-    parser .add_argument (
-    "--log-timeout",
-    type =float ,
-    default =0.0 ,
-    help ="Timeout in seconds per log; 0 disables timeout handling.",
-    )
+    parser =argparse .ArgumentParser (description ="PTAndLogGenerator -> Petri net -> Monte Carlo simulation with stochastic map.")
+    parser .add_argument ("--output",default ="simulated_log.xes",help ="File or directory where simulated XES logs are stored. If multiple logs are requested, numbered files are created.")
+    parser .add_argument ("--seed",type =int ,default =17 ,help ="Random seed for reproducibility.")
+    parser .add_argument ("--num-logs",type =int ,default =5 ,help ="Number of event logs to simulate.")
+    parser .add_argument ("--traces-per-log","--num-simulations",dest ="traces_per_log",type =int ,default =50 ,help ="Number of traces (cases) to simulate per log.")
+    parser .add_argument ("--case-arrival-ratio",type =float ,default =3600.0 ,help ="Average case inter-arrival time in seconds.")
+    parser .add_argument ("--base-traces",type =int ,default =50 ,help ="Traces in the base log used to seed the simulation.")
+    parser .add_argument ("--threads","--num-threads",type =int ,default =0 ,help ="Number of worker threads (0 = auto).")
+    parser .add_argument ("--log-timeout",type =float ,default =0.0 ,help ="Timeout in seconds per log; 0 disables timeout handling.")
     args =parser .parse_args ()
     output_base =Path (args .output )
     max_attempts_per_log =10

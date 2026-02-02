@@ -7,12 +7,6 @@ directories :Iterable [str ]=(".","components"),
 exclude_dirs :Iterable [str ]=("__pycache__",".git",".venv","venv",".mypy_cache",".pytest_cache"),
 exclude_files :Iterable [str ]=(),
 )->None :
-    """
-    Collate .py files found under the given directories into a single text file.
-    - directories: one or more directories to search (recursively)
-    - exclude_dirs: directory names to skip anywhere in the tree
-    - exclude_files: specific file basenames to skip
-    """
     this_file =Path (__file__ ).resolve ()
     roots :List [Path ]=[Path (d ).resolve ()for d in directories ]
     py_files :Set [Path ]=set ()
@@ -23,6 +17,10 @@ exclude_files :Iterable [str ]=(),
             dirnames [:]=[d for d in dirnames if d not in exclude_dirs ]
             for fname in filenames :
                 if not fname .endswith (".py"):
+                    continue
+                if fname .startswith ("batch_"):
+                    continue
+                if fname in ("collate.py","merge_txt_files.py"):
                     continue
                 if fname in exclude_files :
                     continue

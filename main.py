@@ -11,92 +11,24 @@ from training import train
 def main ():
     parser =argparse .ArgumentParser (description ="Run the meta-learning model training script.")
     default_config =CONFIG
-    parser .add_argument (
-    '--checkpoint_dir',
-    type =str ,
-    default ='./checkpoints',
-    help ="Directory to save checkpoints and training artifacts."
-    )
-    parser .add_argument (
-    '--resume',
-    action ='store_true',
-    help ="Resume training from the latest checkpoint in --checkpoint_dir."
-    )
-    parser .add_argument (
-    '--stop_after_epoch',
-    type =int ,
-    default =None ,
-    help ="Stop training after this specific epoch number completes (e.g., 1)."
-    )
-    parser .add_argument (
-    '--cleanup_checkpoints',
-    action ='store_true',
-    help ="Remove all intermediate checkpoints after training, keeping only the last one."
-    )
-    parser .add_argument (
-    '--embedding_strategy',
-    type =str ,
-    default =default_config ['embedding_strategy'],
-    choices =['learned','pretrained'],
-    help =f"Embedding strategy to use. (default: {default_config ['embedding_strategy']})"
-    )
-    parser .add_argument (
-    '--num_experts',
-    type =int ,
-    default =default_config ['moe_settings']['num_experts'],
-    help =f"Number of experts (MoE > 1). (default: {default_config ['moe_settings']['num_experts']})"
-    )
-    parser .add_argument ('--d_model',type =int ,default =default_config ['d_model'],
-    help =f"Model dimension. (default: {default_config ['d_model']})")
-    parser .add_argument ('--n_heads',type =int ,default =default_config ['n_heads'],
-    help =f"Number of attention heads. (default: {default_config ['n_heads']})")
-    parser .add_argument ('--n_layers',type =int ,default =default_config ['n_layers'],
-    help =f"Number of transformer layers. (default: {default_config ['n_layers']})")
-    parser .add_argument ('--dropout',type =float ,default =default_config ['dropout'],
-    help =f"Dropout rate. (default: {default_config ['dropout']})")
-    parser .add_argument ('--lr',type =float ,default =default_config ['lr'],
-    help =f"Learning rate. (default: {default_config ['lr']})")
-    parser .add_argument ('--epochs',type =int ,default =default_config ['epochs'],
-    help =f"Number of epochs. (default: {default_config ['epochs']})")
-    parser .add_argument (
-    '--episodes_per_epoch',
-    type =int ,
-    default =default_config ['episodes_per_epoch'],
-    help =f"Episodes per epoch. (default: {default_config ['episodes_per_epoch']})"
-    )
-    parser .add_argument (
-    '--training_strategy',
-    type =str ,
-    default =default_config ['training_strategy'],
-    choices =['episodic','retrieval','mixed'],
-    help =f"Training strategy. (default: {default_config ['training_strategy']})"
-    )
-    parser .add_argument (
-    '--episodic_label_shuffle',
-    type =str ,
-    default =default_config ['episodic_label_shuffle'],
-    choices =['no','yes','mixed'],
-    help =f"Episodic label shuffle strategy. (default: {default_config ['episodic_label_shuffle']})"
-    )
-    parser .add_argument (
-    '--retrieval_train_k',
-    type =int ,
-    default =default_config ['retrieval_train_k'],
-    help =f"k-value for retrieval training. (default: {default_config ['retrieval_train_k']})"
-    )
-    parser .add_argument (
-    '--num_shots_range',
-    type =int ,
-    nargs =2 ,
-    default =default_config ['num_shots_range'],
-    help =f"Min and max k-shots for training. (default: {default_config ['num_shots_range'][0 ]} {default_config ['num_shots_range'][1 ]})"
-    )
-    parser .add_argument (
-    '--num_queries',
-    type =int ,
-    default =default_config ['num_queries'],
-    help =f"Number of queries per class in episodes. (default: {default_config ['num_queries']})"
-    )
+    parser .add_argument ('--checkpoint_dir',type =str ,default ='./checkpoints',help ="Directory to save checkpoints and training artifacts.")
+    parser .add_argument ('--resume',action ='store_true',help ="Resume training from the latest checkpoint in --checkpoint_dir.")
+    parser .add_argument ('--stop_after_epoch',type =int ,default =None ,help ="Stop training after this specific epoch number completes (e.g., 1).")
+    parser .add_argument ('--cleanup_checkpoints',action ='store_true',help ="Remove all intermediate checkpoints after training, keeping only the last one.")
+    parser .add_argument ('--embedding_strategy',type =str ,default =default_config ['embedding_strategy'],choices =['learned','pretrained'],help =f"Embedding strategy to use. (default: {default_config ['embedding_strategy']})")
+    parser .add_argument ('--num_experts',type =int ,default =default_config ['moe_settings']['num_experts'],help =f"Number of experts (MoE > 1). (default: {default_config ['moe_settings']['num_experts']})")
+    parser .add_argument ('--d_model',type =int ,default =default_config ['d_model'],help =f"Model dimension. (default: {default_config ['d_model']})")
+    parser .add_argument ('--n_heads',type =int ,default =default_config ['n_heads'],help =f"Number of attention heads. (default: {default_config ['n_heads']})")
+    parser .add_argument ('--n_layers',type =int ,default =default_config ['n_layers'],help =f"Number of transformer layers. (default: {default_config ['n_layers']})")
+    parser .add_argument ('--dropout',type =float ,default =default_config ['dropout'],help =f"Dropout rate. (default: {default_config ['dropout']})")
+    parser .add_argument ('--lr',type =float ,default =default_config ['lr'],help =f"Learning rate. (default: {default_config ['lr']})")
+    parser .add_argument ('--epochs',type =int ,default =default_config ['epochs'],help =f"Number of epochs. (default: {default_config ['epochs']})")
+    parser .add_argument ('--episodes_per_epoch',type =int ,default =default_config ['episodes_per_epoch'],help =f"Episodes per epoch. (default: {default_config ['episodes_per_epoch']})")
+    parser .add_argument ('--training_strategy',type =str ,default =default_config ['training_strategy'],choices =['episodic','retrieval','mixed'],help =f"Training strategy. (default: {default_config ['training_strategy']})")
+    parser .add_argument ('--episodic_label_shuffle',type =str ,default =default_config ['episodic_label_shuffle'],choices =['no','yes','mixed'],help =f"Episodic label shuffle strategy. (default: {default_config ['episodic_label_shuffle']})")
+    parser .add_argument ('--retrieval_train_k',type =int ,default =default_config ['retrieval_train_k'],help =f"k-value for retrieval training. (default: {default_config ['retrieval_train_k']})")
+    parser .add_argument ('--num_shots_range',type =int ,nargs =2 ,default =default_config ['num_shots_range'],help =f"Min and max k-shots for training. (default: {default_config ['num_shots_range'][0 ]} {default_config ['num_shots_range'][1 ]})")
+    parser .add_argument ('--num_queries',type =int ,default =default_config ['num_queries'],help =f"Number of queries per class in episodes. (default: {default_config ['num_queries']})")
     args =parser .parse_args ()
     CONFIG ['embedding_strategy']=args .embedding_strategy
     CONFIG ['moe_settings']['num_experts']=args .num_experts

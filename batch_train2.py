@@ -1,10 +1,3 @@
-"""
-batch_train2.py
-Full ablation suite (same as before) + updated MoE experiments:
-- MoE = 2
-- MoE = 8
-All other runs (d_model, heads, layers, pretrained, etc.) are unchanged.
-"""
 import sys
 import subprocess
 import threading
