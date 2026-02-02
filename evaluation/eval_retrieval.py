@@ -180,7 +180,13 @@ def _report_inter_expert_metrics(expert_task_embeddings, task_type: str):
             )
 
 
-def _report_rf_metrics(expert_name: str, task_type: str, embeddings: torch.Tensor, labels: torch.Tensor):
+def _report_rf_metrics(
+    expert_name: str,
+    task_type: str,
+    embeddings: torch.Tensor,
+    labels: torch.Tensor,
+    case_ids: np.ndarray = None
+):
     """
     Train/test split (80/20) and evaluate RandomForest on expert embeddings.
     """
@@ -219,8 +225,10 @@ def _report_rf_metrics(expert_name: str, task_type: str, embeddings: torch.Tenso
         acc = accuracy_score(y_test, preds)
         print(f"  - [{expert_name}] RF (classification, 80/20): Accuracy={acc:.4f} (n={len(y_test)})")
     else:
-        x_train, x_test, y_train, y_test = train_test_split(
-            x, y, test_size=0.2, random_state=42
+        if case_ids is None:
+            case_ids = np.arange(len(y))
+        x_train, x_test, y_train, y_test, _, case_test = train_test_split(
+            x, y, case_ids, test_size=0.2, random_state=42
         )
         reg = RandomForestRegressor(
             n_estimators=300,
@@ -229,13 +237,28 @@ def _report_rf_metrics(expert_name: str, task_type: str, embeddings: torch.Tenso
         )
         reg.fit(x_train, y_train)
         preds = reg.predict(x_test)
-        mae = mean_absolute_error(y_test, preds)
-        mse = mean_squared_error(y_test, preds)
-        rmse = np.sqrt(mse)
-        r2 = r2_score(y_test, preds)
+
+        # Convert back to hours for metrics
+        preds_hours = inverse_transform_time(np.array(preds))
+        preds_hours[preds_hours < 0] = 0
+        labels_hours = inverse_transform_time(np.array(y_test))
+
+        # Per-case MAE/RMSE to align with reference script
+        per_case_abs = {}
+        per_case_sq = {}
+        for case_id, y_true, y_hat in zip(case_test, labels_hours, preds_hours):
+            per_case_abs.setdefault(case_id, []).append(abs(y_true - y_hat))
+            per_case_sq.setdefault(case_id, []).append((y_true - y_hat) ** 2)
+
+        case_mae_values = [sum(vals) / len(vals) for vals in per_case_abs.values()]
+        case_rmse_values = [np.sqrt(sum(vals) / len(vals)) for vals in per_case_sq.values()]
+        mae = float(np.mean(case_mae_values)) if case_mae_values else float("nan")
+        rmse = float(np.mean(case_rmse_values)) if case_rmse_values else float("nan")
+        r2 = r2_score(labels_hours, preds_hours)
         print(
             f"  - [{expert_name}] RF (regression, 80/20): "
-            f"MAE={mae:.4f} | RMSE={rmse:.4f} | R2={r2:.4f} (n={len(y_test)})"
+            f"MAE={mae:.4f} | RMSE={rmse:.4f} | R2={r2:.4f} "
+            f"(cases={len(per_case_abs)} | samples={len(y_test)})"
         )
 
 
@@ -566,4 +589,4 @@ def evaluate_retrieval_augmented(
                         )
 
             # After k-NN eval, run RandomForest on 80/20 split
-            _report_rf_metrics(expert_name, task_type, all_embeddings, all_labels)
+            _report_rf_metrics(expert_name, task_type, all_embeddings, all_labels, all_case_ids)
