@@ -186,9 +186,14 @@ def evaluate_retrieval_augmented(
     if not candidate_percentages:
         candidate_percentages = [100]
 
-    if hasattr(model, "experts") and getattr(model, "num_experts", 1) > 1:
-        experts_to_eval = [(f"Expert {i}", model.experts[i]) for i in range(model.num_experts)]
-        print(f"  - (MoE) Running k-NN eval for all {model.num_experts} experts.")
+    if hasattr(model, "experts"):
+        num_experts = len(model.experts)
+    else:
+        num_experts = 1
+
+    if num_experts > 1:
+        experts_to_eval = [(f"Expert {i}", model.experts[i]) for i in range(num_experts)]
+        print(f"  - (MoE) Running k-NN eval for all {num_experts} experts.")
     else:
         experts_to_eval = [("Expert 0", model)]
 
