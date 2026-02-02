@@ -103,6 +103,81 @@ def _report_similarity_metrics(
     )
 
 
+def _report_inter_expert_metrics(expert_task_embeddings, task_type: str):
+    """
+    Reports pairwise (dis)similarity between experts' embeddings.
+    Metrics:
+      - mean_cos: mean cosine similarity of aligned sample embeddings
+      - mean_l2: mean L2 distance of aligned sample embeddings
+      - centroid_cos_mean (classification only): mean cosine similarity of per-class centroids
+    """
+    expert_names = list(expert_task_embeddings.keys())
+    if len(expert_names) < 2:
+        return
+
+    pairs = []
+    for i in range(len(expert_names)):
+        for j in range(i + 1, len(expert_names)):
+            pairs.append((expert_names[i], expert_names[j]))
+
+    for expert_a, expert_b in pairs:
+        data_a = expert_task_embeddings[expert_a].get(task_type)
+        data_b = expert_task_embeddings[expert_b].get(task_type)
+        if data_a is None or data_b is None:
+            continue
+
+        emb_a, labels_a, _ = data_a
+        emb_b, labels_b, _ = data_b
+
+        if emb_a.shape[0] != emb_b.shape[0]:
+            print(
+                f"  - Inter-expert metrics skipped for {expert_a} vs {expert_b} "
+                f"({task_type}): sample count mismatch."
+            )
+            continue
+
+        # Mean cosine similarity of aligned samples (embeddings already normalized)
+        mean_cos = (emb_a * emb_b).sum(dim=1).mean().item()
+        mean_l2 = torch.norm(emb_a - emb_b, dim=1).mean().item()
+
+        if task_type == 'classification':
+            # Compute per-class centroids for each expert and compare
+            unique_labels = torch.unique(labels_a, sorted=True)
+            if unique_labels.numel() < 2:
+                centroid_cos_mean = float('nan')
+            else:
+                centroids_a = []
+                centroids_b = []
+                for lbl in unique_labels:
+                    mask_a = labels_a == lbl
+                    mask_b = labels_b == lbl
+                    if not mask_a.any() or not mask_b.any():
+                        continue
+                    ca = emb_a[mask_a].mean(dim=0, keepdim=True)
+                    cb = emb_b[mask_b].mean(dim=0, keepdim=True)
+                    ca = F.normalize(ca, p=2, dim=1)
+                    cb = F.normalize(cb, p=2, dim=1)
+                    centroids_a.append(ca)
+                    centroids_b.append(cb)
+                if not centroids_a:
+                    centroid_cos_mean = float('nan')
+                else:
+                    centroids_a = torch.cat(centroids_a, dim=0)
+                    centroids_b = torch.cat(centroids_b, dim=0)
+                    centroid_cos_mean = (centroids_a * centroids_b).sum(dim=1).mean().item()
+
+            print(
+                f"  - Inter-expert metrics ({task_type}) {expert_a} vs {expert_b}: "
+                f"mean_cos={mean_cos:.4f} | mean_l2={mean_l2:.4f} | "
+                f"centroid_cos_mean={centroid_cos_mean:.4f}"
+            )
+        else:
+            print(
+                f"  - Inter-expert metrics ({task_type}) {expert_a} vs {expert_b}: "
+                f"mean_cos={mean_cos:.4f} | mean_l2={mean_l2:.4f}"
+            )
+
+
 def _get_all_test_embeddings(model, test_tasks_list, batch_size=64):
     """
     Helper function to compute embeddings for all (prefix, label, case_id) tuples.
@@ -240,6 +315,10 @@ def evaluate_retrieval_augmented(
 
             expert_task_embeddings[expert_name][task_type] = (embeddings, labels, case_ids)
             print(f"  - [{expert_name}] Pre-computed {embeddings.shape[0]} embeddings for {task_type}.")
+
+    # Report inter-expert (dis)similarity metrics once embeddings are ready
+    for task_type in test_tasks.keys():
+        _report_inter_expert_metrics(expert_task_embeddings, task_type)
 
     # --- 2. Evaluate using k-NN retrieval ---
     for task_type in test_tasks.keys():
