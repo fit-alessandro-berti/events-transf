@@ -230,7 +230,8 @@ def _report_rf_metrics(expert_name: str, task_type: str, embeddings: torch.Tenso
         reg.fit(x_train, y_train)
         preds = reg.predict(x_test)
         mae = mean_absolute_error(y_test, preds)
-        rmse = mean_squared_error(y_test, preds, squared=False)
+        mse = mean_squared_error(y_test, preds)
+        rmse = np.sqrt(mse)
         r2 = r2_score(y_test, preds)
         print(
             f"  - [{expert_name}] RF (regression, 80/20): "
