@@ -3,7 +3,9 @@ import torch
 import torch.nn.functional as F
 import random
 import numpy as np
-from sklearn.metrics import accuracy_score, mean_absolute_error, r2_score
+from sklearn.metrics import accuracy_score, mean_absolute_error, r2_score, mean_squared_error
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from tqdm import tqdm
 
 # --- Import from project files ---
@@ -176,6 +178,64 @@ def _report_inter_expert_metrics(expert_task_embeddings, task_type: str):
                 f"  - Inter-expert metrics ({task_type}) {expert_a} vs {expert_b}: "
                 f"mean_cos={mean_cos:.4f} | mean_l2={mean_l2:.4f}"
             )
+
+
+def _report_rf_metrics(expert_name: str, task_type: str, embeddings: torch.Tensor, labels: torch.Tensor):
+    """
+    Train/test split (80/20) and evaluate RandomForest on expert embeddings.
+    """
+    x = embeddings.detach().cpu().numpy()
+    y = labels.detach().cpu().numpy()
+
+    num_samples = x.shape[0]
+    if num_samples < 2:
+        print(f"  - [{expert_name}] RF metrics skipped ({task_type}): not enough samples.")
+        return
+
+    if task_type == 'classification':
+        unique_labels, counts = np.unique(y, return_counts=True)
+        if unique_labels.size < 2:
+            print(f"  - [{expert_name}] RF metrics skipped (classification): only one class.")
+            return
+        # Stratify only if every class has at least 2 samples
+        stratify = y if counts.min() >= 2 else None
+        try:
+            x_train, x_test, y_train, y_test = train_test_split(
+                x, y, test_size=0.2, random_state=42, stratify=stratify
+            )
+        except ValueError:
+            x_train, x_test, y_train, y_test = train_test_split(
+                x, y, test_size=0.2, random_state=42, stratify=None
+            )
+
+        clf = RandomForestClassifier(
+            n_estimators=300,
+            random_state=42,
+            n_jobs=-1,
+            class_weight="balanced"
+        )
+        clf.fit(x_train, y_train)
+        preds = clf.predict(x_test)
+        acc = accuracy_score(y_test, preds)
+        print(f"  - [{expert_name}] RF (classification, 80/20): Accuracy={acc:.4f} (n={len(y_test)})")
+    else:
+        x_train, x_test, y_train, y_test = train_test_split(
+            x, y, test_size=0.2, random_state=42
+        )
+        reg = RandomForestRegressor(
+            n_estimators=300,
+            random_state=42,
+            n_jobs=-1
+        )
+        reg.fit(x_train, y_train)
+        preds = reg.predict(x_test)
+        mae = mean_absolute_error(y_test, preds)
+        rmse = mean_squared_error(y_test, preds, squared=False)
+        r2 = r2_score(y_test, preds)
+        print(
+            f"  - [{expert_name}] RF (regression, 80/20): "
+            f"MAE={mae:.4f} | RMSE={rmse:.4f} | R2={r2:.4f} (n={len(y_test)})"
+        )
 
 
 def _get_all_test_embeddings(model, test_tasks_list, batch_size=64):
@@ -503,3 +563,6 @@ def evaluate_retrieval_augmented(
                             f"R-squared: {r2_score(labels, preds):.4f} | "
                             f"Avg. Confidence: {avg_conf:.4f}"
                         )
+
+            # After k-NN eval, run RandomForest on 80/20 split
+            _report_rf_metrics(expert_name, task_type, all_embeddings, all_labels)
