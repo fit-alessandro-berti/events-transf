@@ -62,11 +62,11 @@ def _report_similarity_metrics(
     triu_idx = torch.triu_indices(num_classes, num_classes, offset=1, device=device)
     inter_mean = centroid_sims[triu_idx[0], triu_idx[1]].mean().item()
 
-    # 3) Margin: sim to own centroid minus max sim to other centroids
-    sims_all = centered @ centroids.T
-    sims_all[torch.arange(n, device=device), inverse] = -float('inf')
-    max_other = sims_all.max(dim=1).values
-    margin_mean = (sims_to_own - max_other).mean().item()
+    # 3) Class-level margin: centroid self-sim (1.0) minus max sim to other centroids
+    centroid_sims_offdiag = centroids @ centroids.T
+    centroid_sims_offdiag.fill_diagonal_(-float('inf'))
+    max_other_centroid_sim = centroid_sims_offdiag.max(dim=1).values
+    margin_mean = (1.0 - max_other_centroid_sim).mean().item()
 
     # 4) kNN purity (sampled for speed)
     knn_purity = {}
