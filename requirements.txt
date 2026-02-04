@@ -1,0 +1,9 @@
+torch
+numpy
+pandas
+pm4py
+sentence-transformers
+scikit-learn
+scipy
+tqdm
+requests
