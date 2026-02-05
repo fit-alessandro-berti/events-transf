@@ -166,7 +166,7 @@ def main():
     parser.add_argument(
         "log_path",
         nargs="?",
-        default="C:/roadtraffic_10000.xes.gz",
+        default="C:/receipt.xes",
         help="Path to the XES log (default: tests/input_data/receipt.xes)",
     )
     parser.add_argument(
@@ -200,7 +200,7 @@ def main():
     if not feature:
         raise SystemExit("No prefixes found in the log.")
 
-    candidate_percentages = [1, 5, 20, 100]
+    candidate_percentages = [0.5, 1, 3, 5]
 
     class_counts = Counter(target)
     min_class = min(class_counts.values()) if class_counts else 0

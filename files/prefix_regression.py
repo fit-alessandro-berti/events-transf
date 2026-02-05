@@ -115,7 +115,7 @@ def main():
     parser.add_argument(
         "log_path",
         nargs="?",
-        default="C:/roadtraffic_10000.xes.gz",
+        default="C:/receipt.xes",
         help="Path to the XES log (default: tests/input_data/receipt.xes)",
     )
     parser.add_argument(
@@ -150,7 +150,7 @@ def main():
     if not feature:
         raise SystemExit("No prefixes with timestamps found in the log.")
 
-    candidate_percentages = [1, 5, 20, 100]
+    candidate_percentages = [0.5, 1, 3, 5]
 
     X_train, X_test, y_train, y_test, _, case_test = train_test_split(
         feature, target, case_ids, test_size=0.2, random_state=42
