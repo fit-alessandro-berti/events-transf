@@ -221,6 +221,7 @@ def _build_classifiers (num_classes :int ):
         "subsample":0.8 ,
         "colsample_bytree":0.8 ,
         "objective":"multiclass"if num_classes >2 else "binary",
+        "verbosity":-1 ,
         "n_jobs":-1 ,
         "random_state":42
         }
@@ -303,6 +304,7 @@ def _build_regressors ():
         subsample =0.8 ,
         colsample_bytree =0.8 ,
         objective ="regression",
+        verbosity =-1 ,
         n_jobs =-1 ,
         random_state =42
         ),
