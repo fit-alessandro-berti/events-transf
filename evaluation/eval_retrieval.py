@@ -6,18 +6,11 @@ import warnings
 from sklearn .metrics import accuracy_score ,mean_absolute_error ,r2_score
 from sklearn .model_selection import train_test_split
 from sklearn .ensemble import RandomForestClassifier ,RandomForestRegressor
-from sklearn .ensemble import ExtraTreesClassifier ,ExtraTreesRegressor
-from sklearn .ensemble import HistGradientBoostingClassifier ,HistGradientBoostingRegressor
-from sklearn .kernel_approximation import Nystroem
-from sklearn .linear_model import ARDRegression ,BayesianRidge ,ElasticNet ,ElasticNetCV
-from sklearn .linear_model import HuberRegressor ,LogisticRegression ,LogisticRegressionCV
-from sklearn .linear_model import Ridge ,RidgeClassifier ,RidgeClassifierCV ,SGDClassifier
+from sklearn .ensemble import HistGradientBoostingRegressor
+from sklearn .linear_model import Ridge
 from sklearn .pipeline import Pipeline
-from sklearn .preprocessing import Normalizer ,StandardScaler
-from sklearn .neighbors import KNeighborsClassifier ,NearestCentroid
-from sklearn .discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn .kernel_ridge import KernelRidge
-from sklearn .svm import LinearSVC ,LinearSVR ,SVR
+from sklearn .preprocessing import StandardScaler
+from sklearn .svm import LinearSVC
 from tqdm import tqdm
 from time_transf import inverse_transform_time
 from utils .retrieval_utils import find_knn_indices
@@ -160,53 +153,6 @@ def _build_classifiers (num_classes :int ):
     ),
     ),
     ]
-    models .append ((
-    "StandardScaler+RidgeClassifier",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",RidgeClassifier (alpha =10.0 ,class_weight ="balanced")),
-    ]),
-    ))
-    models .append ((
-    "StandardScaler+LogisticRegression",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",LogisticRegression (
-    C =0.2 ,
-    max_iter =5000 ,
-    class_weight ="balanced",
-    solver ="saga",
-    n_jobs =-1
-    )),
-    ]),
-    ))
-    models .append ((
-    "StandardScaler+LogisticRegressionCV",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",LogisticRegressionCV (
-    Cs =10 ,
-    max_iter =5000 ,
-    class_weight ="balanced",
-    solver ="saga",
-    n_jobs =-1
-    )),
-    ]),
-    ))
-    models .append ((
-    "Normalizer+KNN1",
-    Pipeline ([
-    ("norm",Normalizer ()),
-    ("model",KNeighborsClassifier (n_neighbors =1 )),
-    ]),
-    ))
-    models .append ((
-    "StandardScaler+LDA",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",LinearDiscriminantAnalysis (solver ="lsqr",shrinkage ="auto")),
-    ]),
-    ))
     models .extend ([
     (
     "StandardScaler+LinearSVC",
@@ -238,72 +184,6 @@ def _build_regressors ():
     ),
     ),
     ]
-    models .append ((
-    "StandardScaler+BayesianRidge",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",BayesianRidge ()),
-    ]),
-    ))
-    models .append ((
-    "StandardScaler+ARDRegression",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",ARDRegression ()),
-    ]),
-    ))
-    models .append ((
-    "StandardScaler+HuberRegressor",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",HuberRegressor (epsilon =1.35 )),
-    ]),
-    ))
-    models .append ((
-    "StandardScaler+ElasticNet",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",ElasticNet (alpha =1e-3 ,l1_ratio =0.2 ,max_iter =20000 )),
-    ]),
-    ))
-    models .append ((
-    "StandardScaler+ElasticNetCV",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",ElasticNetCV (l1_ratio =[0.1 ,0.5 ,0.9 ],max_iter =20000 )),
-    ]),
-    ))
-    models .append ((
-    "StandardScaler+KernelRidge",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",KernelRidge (alpha =1.0 ,kernel ="rbf",gamma =0.5 )),
-    ]),
-    ))
-    models .append ((
-    "StandardScaler+SVR",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",SVR (C =10.0 ,gamma ="scale",epsilon =0.05 )),
-    ]),
-    ))
-    models .append ((
-    "StandardScaler+LinearSVR",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",LinearSVR (C =1.0 ,epsilon =0.1 ,random_state =42 )),
-    ]),
-    ))
-    models .append ((
-    "ExtraTrees",
-    ExtraTreesRegressor (
-    n_estimators =2000 ,
-    random_state =42 ,
-    n_jobs =-1 ,
-    max_features =0.7 ,
-    min_samples_leaf =2
-    ),
-    ))
     models .extend ([
     (
     "StandardScaler+Ridge",
