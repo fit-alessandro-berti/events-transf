@@ -3,7 +3,7 @@ import torch .nn .functional as F
 import random
 import numpy as np
 from sklearn .metrics import accuracy_score ,mean_absolute_error ,r2_score
-from sklearn .model_selection import GroupShuffleSplit ,train_test_split
+from sklearn .model_selection import train_test_split
 from sklearn .ensemble import RandomForestClassifier ,RandomForestRegressor
 from sklearn .ensemble import HistGradientBoostingRegressor
 from sklearn .kernel_approximation import Nystroem
@@ -258,40 +258,14 @@ train_percentage =100
             print (f"  - [{expert_name }] sklearn metrics skipped (classification): only one class.")
             return
         stratify =y if counts .min ()>=2 else None
-        if case_ids is not None :
-            try :
-                splitter =GroupShuffleSplit (
-                n_splits =1 ,
-                test_size =0.2 ,
-                random_state =42
-                )
-                train_idx ,test_idx =next (splitter .split (x ,y ,groups =case_ids ))
-                x_train =x [train_idx ]
-                x_test =x [test_idx ]
-                y_train =y [train_idx ]
-                y_test =y [test_idx ]
-            except ValueError as e :
-                print (
-                f"  - [{expert_name }] sklearn metrics: group split failed; "
-                f"falling back to random split. Reason: {e }"
-                )
-                try :
-                    x_train ,x_test ,y_train ,y_test =train_test_split (
-                    x ,y ,test_size =0.2 ,random_state =42 ,stratify =stratify
-                    )
-                except ValueError :
-                    x_train ,x_test ,y_train ,y_test =train_test_split (
-                    x ,y ,test_size =0.2 ,random_state =42 ,stratify =None
-                    )
-        else :
-            try :
-                x_train ,x_test ,y_train ,y_test =train_test_split (
-                x ,y ,test_size =0.2 ,random_state =42 ,stratify =stratify
-                )
-            except ValueError :
-                x_train ,x_test ,y_train ,y_test =train_test_split (
-                x ,y ,test_size =0.2 ,random_state =42 ,stratify =None
-                )
+        try :
+            x_train ,x_test ,y_train ,y_test =train_test_split (
+            x ,y ,test_size =0.2 ,random_state =42 ,stratify =stratify
+            )
+        except ValueError :
+            x_train ,x_test ,y_train ,y_test =train_test_split (
+            x ,y ,test_size =0.2 ,random_state =42 ,stratify =None
+            )
         x_train ,y_train =_subsample_training_set (x_train ,y_train ,train_percentage ,stratify )
         if len (x_train )<2 :
             print (f"  - [{expert_name }] sklearn metrics skipped (classification): not enough training samples.")
@@ -315,26 +289,9 @@ train_percentage =100
     else :
         if case_ids is None :
             case_ids =np .arange (len (y ))
-        try :
-            splitter =GroupShuffleSplit (
-            n_splits =1 ,
-            test_size =0.2 ,
-            random_state =42
-            )
-            train_idx ,test_idx =next (splitter .split (x ,y ,groups =case_ids ))
-            x_train =x [train_idx ]
-            x_test =x [test_idx ]
-            y_train =y [train_idx ]
-            y_test =y [test_idx ]
-            case_test =case_ids [test_idx ]
-        except ValueError as e :
-            print (
-            f"  - [{expert_name }] sklearn metrics: group split failed; "
-            f"falling back to random split. Reason: {e }"
-            )
-            x_train ,x_test ,y_train ,y_test ,_ ,case_test =train_test_split (
-            x ,y ,case_ids ,test_size =0.2 ,random_state =42
-            )
+        x_train ,x_test ,y_train ,y_test ,_ ,case_test =train_test_split (
+        x ,y ,case_ids ,test_size =0.2 ,random_state =42
+        )
         x_train ,y_train =_subsample_training_set (x_train ,y_train ,train_percentage )
         if len (x_train )<2 :
             print (f"  - [{expert_name }] sklearn metrics skipped (regression): not enough training samples.")
