@@ -463,7 +463,7 @@ sklearn_train_percentage =100
                 if non_candidate_indices_np is None :
                     non_candidate_indices_tensor =None
                 else :
-                non_candidate_indices_tensor =torch .from_numpy (non_candidate_indices_np ).to (
+                    non_candidate_indices_tensor =torch .from_numpy (non_candidate_indices_np ).to (
                     all_embeddings_norm .device
                     )
                 if non_candidate_indices_tensor is not None :
