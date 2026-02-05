@@ -9,7 +9,6 @@ from sklearn .kernel_approximation import Nystroem
 from sklearn .linear_model import Ridge ,SGDClassifier ,SGDRegressor
 from sklearn .pipeline import Pipeline
 from sklearn .preprocessing import StandardScaler
-from sklearn .svm import LinearSVC
 from tqdm import tqdm
 from time_transf import inverse_transform_time
 from utils .retrieval_utils import find_knn_indices
@@ -145,13 +144,6 @@ def _build_classifiers ():
     n_jobs =-1 ,
     class_weight ="balanced"
     ),
-    ),
-    (
-    "LinearSVC",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",LinearSVC (class_weight ="balanced")),
-    ]),
     ),
     (
     "Nystroem+SGDClassifier",
