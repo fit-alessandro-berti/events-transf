@@ -171,13 +171,6 @@ def _build_regressors ():
     ("model",Ridge ()),
     ]),
     ),
-    (
-    "SGDRegressor",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",SGDRegressor (random_state =42 ,max_iter =2000 ,tol =1e-3)),
-    ]),
-    ),
     ]
 def _compute_case_metrics (labels_hours ,preds_hours ,case_test ):
     per_case_abs ={}
