@@ -358,7 +358,8 @@ test_tasks ,
 num_retrieval_k_list ,
 num_test_queries =200 ,
 candidate_percentages =None ,
-sklearn_train_percentage =100
+sklearn_train_percentage =100 ,
+first_expert_only =False
 ):
     print ("\n🔬 Starting Retrieval-Augmented Evaluation...")
     model .eval ()
@@ -373,6 +374,9 @@ sklearn_train_percentage =100
         print (f"  - (MoE) Running k-NN eval for all {num_experts } experts.")
     else :
         experts_to_eval =[("Expert 0",model )]
+    if first_expert_only and len (experts_to_eval )>1 :
+        experts_to_eval =experts_to_eval [:1 ]
+        print ("  - Retrieval-augmented: limiting to first expert only.")
     expert_task_embeddings ={}
     for expert_name ,expert in experts_to_eval :
         expert_task_embeddings [expert_name ]={}

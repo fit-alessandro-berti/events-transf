@@ -20,11 +20,13 @@ if __name__ =='__main__':
     parser .add_argument ('--num_test_episodes',type =int ,default =default_config ['num_test_episodes'],help =f"Number of episodes to run for testing. (default: {default_config ['num_test_episodes']})")
     parser .add_argument ('--test_retrieval_k',type =int ,nargs ='+',default =default_config ['test_retrieval_k'],help =f"List of k-values for retrieval-augmented mode. (default: {default_config ['test_retrieval_k']})")
     parser .add_argument ('--test_retrieval_candidate_percentages',type =float ,nargs ='+',default =default_config .get ('test_retrieval_candidate_percentages',[100 ]),help ="List of candidate-pool sampling percentages for retrieval-augmented mode.")
+    parser .add_argument ('--test_retrieval_first_expert_only',action ='store_true',help ="If set, stop retrieval-augmented evaluation after the first expert.")
     args =parser .parse_args ()
     CONFIG ['test_mode']=args .test_mode
     CONFIG ['num_test_episodes']=args .num_test_episodes
     CONFIG ['test_retrieval_k']=args .test_retrieval_k
     CONFIG ['test_retrieval_candidate_percentages']=args .test_retrieval_candidate_percentages
+    CONFIG ['test_retrieval_first_expert_only']=args .test_retrieval_first_expert_only
     print ("--- 🚀 Initializing Test Run with Configuration ---")
     config_path =os .path .join (args .checkpoint_dir ,'training_config.pth')
     if os .path .exists (config_path ):
@@ -106,7 +108,8 @@ if __name__ =='__main__':
         test_tasks ,
         k_list_retrieval ,
         CONFIG ['num_test_episodes'],
-        CONFIG .get ('test_retrieval_candidate_percentages')
+        CONFIG .get ('test_retrieval_candidate_percentages'),
+        CONFIG .get ('test_retrieval_first_expert_only',False)
         )
         print ("\n--- Running PCA-kNN Baseline Comparison ---")
         evaluate_pca_knn (
