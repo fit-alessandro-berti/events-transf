@@ -9,7 +9,7 @@ from pm4py.util import xes_constants
 from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
-from sklearn.model_selection import GroupShuffleSplit, train_test_split
+from sklearn.model_selection import train_test_split
 from sklearn.neighbors import KNeighborsClassifier
 
 from prefix_feature_extraction import build_prefix_features_next_activity
@@ -190,7 +190,6 @@ def main():
     (
         feature,
         target,
-        case_ids,
         activities,
         activity_to_index,
         paths,
@@ -203,33 +202,17 @@ def main():
 
     candidate_percentages = [0.5, 1, 3, 5]
 
-    try:
-        splitter = GroupShuffleSplit(
-            n_splits=1, test_size=0.2, random_state=42
-        )
-        train_idx, test_idx = next(
-            splitter.split(feature, target, groups=case_ids)
-        )
-        X_train = [feature[i] for i in train_idx]
-        X_test = [feature[i] for i in test_idx]
-        y_train = [target[i] for i in train_idx]
-        y_test = [target[i] for i in test_idx]
-    except ValueError as exc:
+    class_counts = Counter(target)
+    min_class = min(class_counts.values()) if class_counts else 0
+    stratify = target if min_class >= 2 else None
+    if stratify is None:
         print(
-            "Warning: group split failed; falling back to random split. "
-            f"Reason: {exc}"
+            "Warning: some classes have < 2 samples; "
+            "disabling stratified split."
         )
-        class_counts = Counter(target)
-        min_class = min(class_counts.values()) if class_counts else 0
-        stratify = target if min_class >= 2 else None
-        if stratify is None:
-            print(
-                "Warning: some classes have < 2 samples; "
-                "disabling stratified split."
-            )
-        X_train, X_test, y_train, y_test = train_test_split(
-            feature, target, test_size=0.2, random_state=42, stratify=stratify
-        )
+    X_train, X_test, y_train, y_test = train_test_split(
+        feature, target, test_size=0.2, random_state=42, stratify=stratify
+    )
 
     print(f"Log path: {args.log_path}")
     print(f"Activity key: {args.activity_key}")
