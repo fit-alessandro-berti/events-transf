@@ -4,6 +4,7 @@ import random
 from collections import defaultdict
 from math import sqrt
 
+import numpy as np
 import pm4py
 from pm4py.util import xes_constants
 from sklearn.decomposition import PCA
@@ -14,6 +15,7 @@ from sklearn.metrics import r2_score
 from sklearn.model_selection import train_test_split
 
 from prefix_feature_extraction import build_prefix_features_remaining_time
+from time_transf import transform_time, inverse_transform_time
 
 
 def select_components_by_cumulative_variance(
@@ -71,9 +73,17 @@ def train_pca_knn_regressor(features, targets):
     return {"pca": pca, "model": reg, "n_components": n_components}
 
 
-def compute_regression_metrics(targets, predictions, case_ids):
-    abs_errors = [abs(y_true - y_hat) for y_true, y_hat in zip(targets, predictions)]
-    sq_errors = [(y_true - y_hat) ** 2 for y_true, y_hat in zip(targets, predictions)]
+def compute_regression_metrics(targets_transformed, predictions_transformed, case_ids):
+    targets_hours = inverse_transform_time(
+        np.asarray(targets_transformed, dtype=float)
+    )
+    preds_hours = inverse_transform_time(
+        np.asarray(predictions_transformed, dtype=float)
+    )
+    preds_hours[preds_hours < 0] = 0
+
+    abs_errors = [abs(y_true - y_hat) for y_true, y_hat in zip(targets_hours, preds_hours)]
+    sq_errors = [(y_true - y_hat) ** 2 for y_true, y_hat in zip(targets_hours, preds_hours)]
 
     per_case_abs = defaultdict(list)
     per_case_sq = defaultdict(list)
@@ -88,9 +98,9 @@ def compute_regression_metrics(targets, predictions, case_ids):
     rmse = sum(case_rmse_values) / len(case_rmse_values)
 
     return {
-        "mae_hours": mae / 3600.0,
-        "rmse_hours": rmse / 3600.0,
-        "r2": r2_score(targets, predictions),
+        "mae_hours": mae,
+        "rmse_hours": rmse,
+        "r2": r2_score(targets_hours, preds_hours),
     }
 
 
@@ -152,8 +162,11 @@ def main():
 
     candidate_percentages = [0.5, 1, 3, 5]
 
+    targets_hours = np.asarray(target, dtype=float) / 3600.0
+    targets_transformed = transform_time(targets_hours).tolist()
+
     X_train, X_test, y_train, y_test, _, case_test = train_test_split(
-        feature, target, case_ids, test_size=0.2, random_state=42
+        feature, targets_transformed, case_ids, test_size=0.2, random_state=42
     )
 
     print(f"Log path: {args.log_path}")
