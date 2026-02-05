@@ -279,7 +279,7 @@ train_percentage =100
                 if len (labels_hours )<2 :
                     r2 =float ("nan")
                 else :
-                r2 =r2_score (labels_hours ,preds_hours )
+                    r2 =r2_score (labels_hours ,preds_hours )
                 print (
                 f"  - [{expert_name }] {model_name } (regression, 80/20, train={train_percentage }%): "
                 f"MAE={mae :.4f} | RMSE={rmse :.4f} | R2={r2 :.4f} "
