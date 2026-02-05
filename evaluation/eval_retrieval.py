@@ -201,17 +201,13 @@ def _build_regressors ():
     ),
     ),
     ]
-def _compute_case_metrics (labels_hours ,preds_hours ,case_test ):
-    per_case_abs ={}
-    per_case_sq ={}
-    for case_id ,y_true ,y_hat in zip (case_test ,labels_hours ,preds_hours ):
-        per_case_abs .setdefault (case_id ,[]).append (abs (y_true -y_hat ))
-        per_case_sq .setdefault (case_id ,[]).append ((y_true -y_hat )**2 )
-    case_mae_values =[sum (vals )/len (vals )for vals in per_case_abs .values ()]
-    case_rmse_values =[np .sqrt (sum (vals )/len (vals ))for vals in per_case_sq .values ()]
-    mae =float (np .mean (case_mae_values ))if case_mae_values else float ("nan")
-    rmse =float (np .mean (case_rmse_values ))if case_rmse_values else float ("nan")
-    return mae ,rmse ,len (per_case_abs )
+def _compute_sample_metrics (labels_hours ,preds_hours ,case_test ):
+    abs_errors =np .abs (labels_hours -preds_hours )
+    sq_errors =(labels_hours -preds_hours )**2
+    mae =float (np .mean (abs_errors ))if abs_errors .size else float ("nan")
+    rmse =float (np .sqrt (np .mean (sq_errors )))if sq_errors .size else float ("nan")
+    num_cases =len (np .unique (case_test ))if case_test is not None else 0
+    return mae ,rmse ,num_cases
 def _subsample_training_set (x_train ,y_train ,train_percentage ,stratify =None ):
     if train_percentage is None :
         return x_train ,y_train
@@ -347,14 +343,14 @@ train_percentage =100
                 preds_hours =inverse_transform_time (preds )
                 preds_hours [preds_hours <0 ]=0
                 labels_hours =inverse_transform_time (np .array (y_test ))
-                mae ,rmse ,num_cases =_compute_case_metrics (labels_hours ,preds_hours ,case_test )
+                mae ,rmse ,num_cases =_compute_sample_metrics (labels_hours ,preds_hours ,case_test )
                 if len (labels_hours )<2 :
                     r2 =float ("nan")
                 else :
                     r2 =r2_score (labels_hours ,preds_hours )
                 print (
                 f"  - [{expert_name }] {model_name } (regression, 80/20, train={train_percentage }%): "
-                f"MAE={mae :.4f} | RMSE={rmse :.4f} | R2={r2 :.4f} "
+                f"MAE(sample)={mae :.4f} | RMSE(sample)={rmse :.4f} | R2={r2 :.4f} "
                 f"(cases={num_cases } | samples={len (y_test )})"
                 )
             except Exception as e :

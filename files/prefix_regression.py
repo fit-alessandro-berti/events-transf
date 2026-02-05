@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
 import random
-from collections import defaultdict
 from math import sqrt
 
 import numpy as np
@@ -82,20 +81,11 @@ def compute_regression_metrics(targets_transformed, predictions_transformed, cas
     )
     preds_hours[preds_hours < 0] = 0
 
-    abs_errors = [abs(y_true - y_hat) for y_true, y_hat in zip(targets_hours, preds_hours)]
-    sq_errors = [(y_true - y_hat) ** 2 for y_true, y_hat in zip(targets_hours, preds_hours)]
+    abs_errors = np.abs(targets_hours - preds_hours)
+    sq_errors = (targets_hours - preds_hours) ** 2
 
-    per_case_abs = defaultdict(list)
-    per_case_sq = defaultdict(list)
-    for case_id, ae, se in zip(case_ids, abs_errors, sq_errors):
-        per_case_abs[case_id].append(ae)
-        per_case_sq[case_id].append(se)
-
-    case_mae_values = [sum(vals) / len(vals) for vals in per_case_abs.values()]
-    case_rmse_values = [sqrt(sum(vals) / len(vals)) for vals in per_case_sq.values()]
-
-    mae = sum(case_mae_values) / len(case_mae_values)
-    rmse = sum(case_rmse_values) / len(case_rmse_values)
+    mae = float(np.mean(abs_errors)) if abs_errors.size else float("nan")
+    rmse = float(sqrt(np.mean(sq_errors))) if sq_errors.size else float("nan")
 
     return {
         "mae_hours": mae,
@@ -209,8 +199,8 @@ def main():
         )
         print(f"Training sample %: {percentage}")
         print(f"Train size (sampled): {len(X_sampled)}")
-        print(f"Per-case MAE (hours): {metrics['mae_hours']:.4f}")
-        print(f"Per-case RMSE (hours): {metrics['rmse_hours']:.4f}")
+        print(f"MAE (hours): {metrics['mae_hours']:.4f}")
+        print(f"RMSE (hours): {metrics['rmse_hours']:.4f}")
         print(f"R2: {metrics['r2']:.4f}")
         print(
             "PCA+kNN (k=1) "
