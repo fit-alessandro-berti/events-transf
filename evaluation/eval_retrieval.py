@@ -571,23 +571,11 @@ sklearn_train_percentage =100
                         f"R-squared: {r2_score (labels ,preds ):.4f} | "
                         f"Avg. Confidence: {avg_conf :.4f}"
                         )
-                if non_candidate_indices_np is None :
-                    sklearn_embeddings =all_embeddings_raw
-                    sklearn_labels =all_labels
-                    sklearn_case_ids =all_case_ids
-                else :
-                    candidate_mask =np .ones (num_total_samples ,dtype =bool )
-                    candidate_mask [non_candidate_indices_np ]=False
-                    candidate_indices =np .where (candidate_mask )[0 ]
-                    candidate_tensor =torch .from_numpy (candidate_indices ).to (all_embeddings_raw .device )
-                    sklearn_embeddings =all_embeddings_raw .index_select (0 ,candidate_tensor )
-                    sklearn_labels =all_labels .index_select (0 ,candidate_tensor )
-                    sklearn_case_ids =None if all_case_ids is None else all_case_ids [candidate_indices ]
                 _report_sklearn_metrics (
                 f"{expert_name } | pct={pct }%",
                 task_type ,
-                sklearn_embeddings ,
-                sklearn_labels ,
-                sklearn_case_ids ,
-                train_percentage =sklearn_train_percentage
+                all_embeddings_raw ,
+                all_labels ,
+                all_case_ids ,
+                train_percentage =pct
                 )
