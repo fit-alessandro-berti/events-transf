@@ -5,11 +5,11 @@ import numpy as np
 from sklearn .metrics import accuracy_score ,mean_absolute_error ,r2_score ,mean_squared_error
 from sklearn .model_selection import train_test_split
 from sklearn .ensemble import RandomForestClassifier ,RandomForestRegressor
-from sklearn .kernel_ridge import KernelRidge
-from sklearn .linear_model import ElasticNet ,Ridge ,RidgeClassifier ,SGDRegressor
+from sklearn .kernel_approximation import Nystroem
+from sklearn .linear_model import Ridge ,SGDClassifier ,SGDRegressor
 from sklearn .pipeline import Pipeline
 from sklearn .preprocessing import StandardScaler
-from sklearn .svm import LinearSVC ,SVC
+from sklearn .svm import LinearSVC
 from tqdm import tqdm
 from time_transf import inverse_transform_time
 from utils .retrieval_utils import find_knn_indices
@@ -147,13 +147,6 @@ def _build_classifiers ():
     ),
     ),
     (
-    "SVC(rbf)",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",SVC (kernel ="rbf",class_weight ="balanced")),
-    ]),
-    ),
-    (
     "LinearSVC",
     Pipeline ([
     ("scaler",StandardScaler ()),
@@ -161,10 +154,11 @@ def _build_classifiers ():
     ]),
     ),
     (
-    "RidgeClassifier",
+    "Nystroem+SGDClassifier",
     Pipeline ([
     ("scaler",StandardScaler ()),
-    ("model",RidgeClassifier (class_weight ="balanced")),
+    ("nystroem",Nystroem (kernel ="rbf",random_state =42 )),
+    ("model",SGDClassifier (class_weight ="balanced",random_state =42 ,max_iter =2000 ,tol =1e-3)),
     ]),
     ),
     ]
@@ -186,24 +180,10 @@ def _build_regressors ():
     ]),
     ),
     (
-    "ElasticNet",
+    "SGDRegressor",
     Pipeline ([
     ("scaler",StandardScaler ()),
-    ("model",ElasticNet (random_state =42 ,max_iter =5000)),
-    ]),
-    ),
-    (
-    "SGDRegressor(huber)",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",SGDRegressor (loss ="huber",random_state =42 ,max_iter =2000 ,tol =1e-3)),
-    ]),
-    ),
-    (
-    "KernelRidge(rbf)",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",KernelRidge (kernel ="rbf")),
+    ("model",SGDRegressor (random_state =42 ,max_iter =2000 ,tol =1e-3)),
     ]),
     ),
     ]
@@ -526,4 +506,10 @@ candidate_percentages =None
                         f"R-squared: {r2_score (labels ,preds ):.4f} | "
                         f"Avg. Confidence: {avg_conf :.4f}"
                         )
-            _report_sklearn_metrics (expert_name ,task_type ,all_embeddings ,all_labels ,all_case_ids )
+                _report_sklearn_metrics (
+                f"{expert_name } | pct={pct }%",
+                task_type ,
+                all_embeddings ,
+                all_labels ,
+                all_case_ids
+                )
