@@ -5,10 +5,12 @@ import numpy as np
 from sklearn .metrics import accuracy_score ,mean_absolute_error ,r2_score
 from sklearn .model_selection import train_test_split
 from sklearn .ensemble import RandomForestClassifier ,RandomForestRegressor
+from sklearn .ensemble import HistGradientBoostingRegressor
 from sklearn .kernel_approximation import Nystroem
-from sklearn .linear_model import Ridge ,SGDClassifier
+from sklearn .linear_model import HuberRegressor ,LogisticRegression ,Ridge ,SGDClassifier
 from sklearn .pipeline import Pipeline
 from sklearn .preprocessing import StandardScaler
+from sklearn .svm import LinearSVC
 from tqdm import tqdm
 from time_transf import inverse_transform_time
 from utils .retrieval_utils import find_knn_indices
@@ -153,6 +155,20 @@ def _build_classifiers ():
     ("model",SGDClassifier (class_weight ="balanced",random_state =42 ,max_iter =2000 ,tol =1e-3)),
     ]),
     ),
+    (
+    "StandardScaler+LogisticRegression(saga)",
+    Pipeline ([
+    ("scaler",StandardScaler ()),
+    ("model",LogisticRegression (solver ="saga",max_iter =5000 ,class_weight ="balanced",random_state =42)),
+    ]),
+    ),
+    (
+    "StandardScaler+LinearSVC",
+    Pipeline ([
+    ("scaler",StandardScaler ()),
+    ("model",LinearSVC (class_weight ="balanced")),
+    ]),
+    ),
     ]
 def _build_regressors ():
     return [
@@ -170,6 +186,24 @@ def _build_regressors ():
     # ("scaler",StandardScaler ()),
     ("model",Ridge ()),
     ]),
+    ),
+    (
+    "StandardScaler+Ridge",
+    Pipeline ([
+    ("scaler",StandardScaler ()),
+    ("model",Ridge ()),
+    ]),
+    ),
+    (
+    "StandardScaler+HuberRegressor",
+    Pipeline ([
+    ("scaler",StandardScaler ()),
+    ("model",HuberRegressor ()),
+    ]),
+    ),
+    (
+    "HistGradientBoostingRegressor",
+    HistGradientBoostingRegressor (random_state =42 ),
     ),
     ]
 def _compute_case_metrics (labels_hours ,preds_hours ,case_test ):
