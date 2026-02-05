@@ -10,6 +10,7 @@ import warnings
 from tqdm import tqdm
 from config import CONFIG
 from time_transf import inverse_transform_time
+warnings .filterwarnings ("ignore",module =r"sklearn.*")
 def _get_all_test_embeddings (model ,test_tasks_list ,batch_size =64 ):
     all_embeddings =[]
     all_labels =[]

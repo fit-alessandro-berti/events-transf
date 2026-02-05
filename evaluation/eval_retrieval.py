@@ -2,6 +2,7 @@ import torch
 import torch .nn .functional as F
 import random
 import numpy as np
+import warnings
 from sklearn .metrics import accuracy_score ,mean_absolute_error ,r2_score
 from sklearn .model_selection import train_test_split
 from sklearn .ensemble import RandomForestClassifier ,RandomForestRegressor
@@ -20,6 +21,7 @@ from sklearn .svm import LinearSVC ,LinearSVR ,SVR
 from tqdm import tqdm
 from time_transf import inverse_transform_time
 from utils .retrieval_utils import find_knn_indices
+warnings .filterwarnings ("ignore",module =r"sklearn.*")
 def _report_similarity_metrics (
 embeddings :torch .Tensor ,
 labels :torch .Tensor ,
