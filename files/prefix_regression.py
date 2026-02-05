@@ -12,7 +12,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.neighbors import KNeighborsRegressor
 
 from sklearn.metrics import r2_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit, train_test_split
 
 from prefix_feature_extraction import build_prefix_features_remaining_time
 from time_transf import transform_time, inverse_transform_time
@@ -125,7 +125,7 @@ def main():
     parser.add_argument(
         "log_path",
         nargs="?",
-        default="C:/receipt.xes",
+        default="C:/roadtraffic_10000.xes.gz",
         help="Path to the XES log (default: tests/input_data/receipt.xes)",
     )
     parser.add_argument(
@@ -165,9 +165,26 @@ def main():
     targets_hours = np.asarray(target, dtype=float) / 3600.0
     targets_transformed = transform_time(targets_hours).tolist()
 
-    X_train, X_test, y_train, y_test, _, case_test = train_test_split(
-        feature, targets_transformed, case_ids, test_size=0.2, random_state=42
-    )
+    try:
+        splitter = GroupShuffleSplit(
+            n_splits=1, test_size=0.2, random_state=42
+        )
+        train_idx, test_idx = next(
+            splitter.split(feature, targets_transformed, groups=case_ids)
+        )
+        X_train = [feature[i] for i in train_idx]
+        X_test = [feature[i] for i in test_idx]
+        y_train = [targets_transformed[i] for i in train_idx]
+        y_test = [targets_transformed[i] for i in test_idx]
+        case_test = [case_ids[i] for i in test_idx]
+    except ValueError as exc:
+        print(
+            "Warning: group split failed; falling back to random split. "
+            f"Reason: {exc}"
+        )
+        X_train, X_test, y_train, y_test, _, case_test = train_test_split(
+            feature, targets_transformed, case_ids, test_size=0.2, random_state=42
+        )
 
     print(f"Log path: {args.log_path}")
     print(f"Activity key: {args.activity_key}")

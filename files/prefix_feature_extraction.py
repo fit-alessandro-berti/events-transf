@@ -82,6 +82,7 @@ def _build_prefix_features(log, activity_key, timestamp_key, target_mode):
             if target_mode == "next_activity":
                 target.append(activity_to_index[curr_activity])
                 feature.append(row)
+                case_ids.append(trace_id)
             else:
                 curr_ts = curr_event.get(timestamp_key) if timestamp_key else None
                 if curr_ts is not None:
@@ -100,10 +101,18 @@ def build_prefix_features_next_activity(
     activity_key=xes_constants.DEFAULT_NAME_KEY,
     timestamp_key=xes_constants.DEFAULT_TIMESTAMP_KEY,
 ):
-    feature, target, _, activities, activity_to_index, paths, path_to_index = (
+    feature, target, case_ids, activities, activity_to_index, paths, path_to_index = (
         _build_prefix_features(log, activity_key, timestamp_key, "next_activity")
     )
-    return feature, target, activities, activity_to_index, paths, path_to_index
+    return (
+        feature,
+        target,
+        case_ids,
+        activities,
+        activity_to_index,
+        paths,
+        path_to_index,
+    )
 
 
 def build_prefix_features_remaining_time(
