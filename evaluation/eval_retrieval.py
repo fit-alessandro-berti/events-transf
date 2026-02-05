@@ -14,6 +14,33 @@ from sklearn .svm import LinearSVC
 from tqdm import tqdm
 from time_transf import inverse_transform_time
 from utils .retrieval_utils import find_knn_indices
+try :
+    from xgboost import XGBClassifier ,XGBRegressor
+    _HAS_XGBOOST =True
+except Exception :
+    XGBClassifier =None
+    XGBRegressor =None
+    _HAS_XGBOOST =False
+try :
+    from catboost import CatBoostClassifier ,CatBoostRegressor
+    _HAS_CATBOOST =True
+except Exception :
+    CatBoostClassifier =None
+    CatBoostRegressor =None
+    _HAS_CATBOOST =False
+try :
+    from lightgbm import LGBMClassifier ,LGBMRegressor
+    _HAS_LIGHTGBM =True
+except Exception :
+    LGBMClassifier =None
+    LGBMRegressor =None
+    _HAS_LIGHTGBM =False
+_OPTIONAL_WARNED =set ()
+def _warn_optional_missing (name :str ,message :str ):
+    if name in _OPTIONAL_WARNED :
+        return
+    print (message )
+    _OPTIONAL_WARNED .add (name )
 def _report_similarity_metrics (
 embeddings :torch .Tensor ,
 labels :torch .Tensor ,
@@ -136,8 +163,8 @@ def _report_inter_expert_metrics (expert_task_embeddings ,task_type :str ):
             f"  - Inter-expert metrics ({task_type }) {expert_a } vs {expert_b }: "
             f"mean_cos={mean_cos :.4f} | mean_l2={mean_l2 :.4f}"
             )
-def _build_classifiers ():
-    return [
+def _build_classifiers (num_classes :int ):
+    models =[
     (
     "RandomForest",
     RandomForestClassifier (
@@ -151,6 +178,61 @@ def _build_classifiers ():
     max_features ="sqrt"
     ),
     ),
+    ]
+    if _HAS_XGBOOST :
+        xgb_params ={
+        "n_estimators":400 ,
+        "max_depth":6 ,
+        "learning_rate":0.05 ,
+        "subsample":0.8 ,
+        "colsample_bytree":0.8 ,
+        "objective":"multi:softprob"if num_classes >2 else "binary:logistic",
+        "eval_metric":"mlogloss"if num_classes >2 else "logloss",
+        "n_jobs":-1 ,
+        "random_state":42
+        }
+        if num_classes >2 :
+            xgb_params ["num_class"]=num_classes
+        models .append ((
+        "XGBoost",
+        XGBClassifier (**xgb_params ),
+        ))
+    else :
+        _warn_optional_missing ("xgboost","  - Skipping XGBoost models (xgboost not installed).")
+    if _HAS_CATBOOST :
+        models .append ((
+        "CatBoost",
+        CatBoostClassifier (
+        iterations =400 ,
+        depth =6 ,
+        learning_rate =0.08 ,
+        loss_function ="MultiClass"if num_classes >2 else "Logloss",
+        random_seed =42 ,
+        verbose =False
+        ),
+        ))
+    else :
+        _warn_optional_missing ("catboost","  - Skipping CatBoost models (catboost not installed).")
+    if _HAS_LIGHTGBM :
+        lgb_params ={
+        "n_estimators":500 ,
+        "learning_rate":0.05 ,
+        "num_leaves":63 ,
+        "subsample":0.8 ,
+        "colsample_bytree":0.8 ,
+        "objective":"multiclass"if num_classes >2 else "binary",
+        "n_jobs":-1 ,
+        "random_state":42
+        }
+        if num_classes >2 :
+            lgb_params ["num_class"]=num_classes
+        models .append ((
+        "LightGBM",
+        LGBMClassifier (**lgb_params ),
+        ))
+    else :
+        _warn_optional_missing ("lightgbm","  - Skipping LightGBM models (lightgbm not installed).")
+    models .extend ([
     (
     "StandardScaler+LinearSVC",
     Pipeline ([
@@ -164,9 +246,10 @@ def _build_classifiers ():
     )),
     ]),
     ),
-    ]
+    ])
+    return models
 def _build_regressors ():
-    return [
+    models =[
     (
     "RandomForest",
     RandomForestRegressor (
@@ -179,6 +262,54 @@ def _build_regressors ():
     max_features =0.5
     ),
     ),
+    ]
+    if _HAS_XGBOOST :
+        models .append ((
+        "XGBoost",
+        XGBRegressor (
+        n_estimators =500 ,
+        max_depth =6 ,
+        learning_rate =0.05 ,
+        subsample =0.8 ,
+        colsample_bytree =0.8 ,
+        objective ="reg:squarederror",
+        n_jobs =-1 ,
+        random_state =42
+        ),
+        ))
+    else :
+        _warn_optional_missing ("xgboost","  - Skipping XGBoost models (xgboost not installed).")
+    if _HAS_CATBOOST :
+        models .append ((
+        "CatBoost",
+        CatBoostRegressor (
+        iterations =500 ,
+        depth =6 ,
+        learning_rate =0.08 ,
+        loss_function ="RMSE",
+        random_seed =42 ,
+        verbose =False
+        ),
+        ))
+    else :
+        _warn_optional_missing ("catboost","  - Skipping CatBoost models (catboost not installed).")
+    if _HAS_LIGHTGBM :
+        models .append ((
+        "LightGBM",
+        LGBMRegressor (
+        n_estimators =600 ,
+        learning_rate =0.05 ,
+        num_leaves =63 ,
+        subsample =0.8 ,
+        colsample_bytree =0.8 ,
+        objective ="regression",
+        n_jobs =-1 ,
+        random_state =42
+        ),
+        ))
+    else :
+        _warn_optional_missing ("lightgbm","  - Skipping LightGBM models (lightgbm not installed).")
+    models .extend ([
     (
     "StandardScaler+Ridge",
     Pipeline ([
@@ -200,7 +331,8 @@ def _build_regressors ():
     n_iter_no_change =20
     ),
     ),
-    ]
+    ])
+    return models
 def _compute_case_metrics (labels_hours ,preds_hours ,case_test ):
     per_case_abs ={}
     per_case_sq ={}
@@ -273,7 +405,8 @@ train_percentage =100
         if np .unique (y_train ).size <2 :
             print (f"  - [{expert_name }] sklearn metrics skipped (classification): training set has one class.")
             return
-        for model_name ,clf in _build_classifiers ():
+        num_classes =int (np .unique (y_train ).size )
+        for model_name ,clf in _build_classifiers (num_classes ):
             try :
                 clf .fit (x_train ,y_train )
                 preds =clf .predict (x_test )
