@@ -156,13 +156,6 @@ def _build_classifiers ():
     ]),
     ),
     (
-    "StandardScaler+LogisticRegression(saga)",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",LogisticRegression (solver ="saga",max_iter =5000 ,class_weight ="balanced",random_state =42)),
-    ]),
-    ),
-    (
     "StandardScaler+LinearSVC",
     Pipeline ([
     ("scaler",StandardScaler ()),
