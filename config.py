@@ -43,7 +43,7 @@ CONFIG ={
 'epochs':10 ,
 'episodes_per_epoch':1000 ,
 'episodic_label_shuffle':'mixed',
-'training_strategy':'mixed',
+'training_strategy':'mixed', #episodic, retrieval, mixed
 'retrieval_train_k':5 ,
 'retrieval_train_batch_size':64 ,
 'test_mode':'retrieval_augmented',
