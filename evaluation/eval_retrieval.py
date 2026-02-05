@@ -15,13 +15,6 @@ from tqdm import tqdm
 from time_transf import inverse_transform_time
 from utils .retrieval_utils import find_knn_indices
 try :
-    from xgboost import XGBClassifier ,XGBRegressor
-    _HAS_XGBOOST =True
-except Exception :
-    XGBClassifier =None
-    XGBRegressor =None
-    _HAS_XGBOOST =False
-try :
     from catboost import CatBoostClassifier ,CatBoostRegressor
     _HAS_CATBOOST =True
 except Exception :
@@ -179,26 +172,6 @@ def _build_classifiers (num_classes :int ):
     ),
     ),
     ]
-    if _HAS_XGBOOST :
-        xgb_params ={
-        "n_estimators":400 ,
-        "max_depth":6 ,
-        "learning_rate":0.05 ,
-        "subsample":0.8 ,
-        "colsample_bytree":0.8 ,
-        "objective":"multi:softprob"if num_classes >2 else "binary:logistic",
-        "eval_metric":"mlogloss"if num_classes >2 else "logloss",
-        "n_jobs":-1 ,
-        "random_state":42
-        }
-        if num_classes >2 :
-            xgb_params ["num_class"]=num_classes
-        models .append ((
-        "XGBoost",
-        XGBClassifier (**xgb_params ),
-        ))
-    else :
-        _warn_optional_missing ("xgboost","  - Skipping XGBoost models (xgboost not installed).")
     if _HAS_CATBOOST :
         models .append ((
         "CatBoost",
@@ -264,22 +237,6 @@ def _build_regressors ():
     ),
     ),
     ]
-    if _HAS_XGBOOST :
-        models .append ((
-        "XGBoost",
-        XGBRegressor (
-        n_estimators =500 ,
-        max_depth =6 ,
-        learning_rate =0.05 ,
-        subsample =0.8 ,
-        colsample_bytree =0.8 ,
-        objective ="reg:squarederror",
-        n_jobs =-1 ,
-        random_state =42
-        ),
-        ))
-    else :
-        _warn_optional_missing ("xgboost","  - Skipping XGBoost models (xgboost not installed).")
     if _HAS_CATBOOST :
         models .append ((
         "CatBoost",
