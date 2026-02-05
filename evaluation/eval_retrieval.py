@@ -174,24 +174,10 @@ def _build_regressors ():
     ),
     ),
     (
-    "Ridge",
-    Pipeline ([
-    # ("scaler",StandardScaler ()),
-    ("model",Ridge ()),
-    ]),
-    ),
-    (
     "StandardScaler+Ridge",
     Pipeline ([
     ("scaler",StandardScaler ()),
     ("model",Ridge ()),
-    ]),
-    ),
-    (
-    "StandardScaler+HuberRegressor",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",HuberRegressor ()),
     ]),
     ),
     (
