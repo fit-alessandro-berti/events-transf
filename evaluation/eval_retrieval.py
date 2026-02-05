@@ -148,7 +148,7 @@ def _build_classifiers ():
     (
     "Nystroem+SGDClassifier",
     Pipeline ([
-    ("scaler",StandardScaler ()),
+    # ("scaler",StandardScaler ()),
     ("nystroem",Nystroem (kernel ="rbf",random_state =42 )),
     ("model",SGDClassifier (class_weight ="balanced",random_state =42 ,max_iter =2000 ,tol =1e-3)),
     ]),
@@ -167,7 +167,7 @@ def _build_regressors ():
     (
     "Ridge",
     Pipeline ([
-    ("scaler",StandardScaler ()),
+    # ("scaler",StandardScaler ()),
     ("model",Ridge ()),
     ]),
     ),
