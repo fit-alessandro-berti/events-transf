@@ -168,13 +168,6 @@ def _build_classifiers (num_classes :int ):
     ]),
     ))
     models .append ((
-    "StandardScaler+RidgeClassifierCV",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",RidgeClassifierCV (alphas =np .logspace (-4 ,4 ,17 ),class_weight ="balanced")),
-    ]),
-    ))
-    models .append ((
     "StandardScaler+LogisticRegression",
     Pipeline ([
     ("scaler",StandardScaler ()),
@@ -201,13 +194,6 @@ def _build_classifiers (num_classes :int ):
     ]),
     ))
     models .append ((
-    "Normalizer+NearestCentroid",
-    Pipeline ([
-    ("norm",Normalizer ()),
-    ("model",NearestCentroid ()),
-    ]),
-    ))
-    models .append ((
     "Normalizer+KNN1",
     Pipeline ([
     ("norm",Normalizer ()),
@@ -220,35 +206,6 @@ def _build_classifiers (num_classes :int ):
     ("scaler",StandardScaler ()),
     ("model",LinearDiscriminantAnalysis (solver ="lsqr",shrinkage ="auto")),
     ]),
-    ))
-    models .append ((
-    "StandardScaler+Nystroem+LinearSVC",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("feat",Nystroem (kernel ="rbf",gamma =1.0 ,n_components =512 ,random_state =42 )),
-    ("model",LinearSVC (C =0.5 ,class_weight ="balanced",max_iter =20000 )),
-    ]),
-    ))
-    models .append ((
-    "ExtraTrees",
-    ExtraTreesClassifier (
-    n_estimators =2000 ,
-    random_state =42 ,
-    n_jobs =-1 ,
-    class_weight ="balanced_subsample",
-    max_features ="sqrt"
-    ),
-    ))
-    models .append ((
-    "HistGradientBoostingClassifier",
-    HistGradientBoostingClassifier (
-    random_state =42 ,
-    max_depth =6 ,
-    learning_rate =0.05 ,
-    max_iter =300 ,
-    min_samples_leaf =10 ,
-    l2_regularization =1.0
-    ),
     ))
     models .extend ([
     (
