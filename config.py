@@ -49,7 +49,7 @@ CONFIG ={
 'test_mode':'retrieval_augmented',
 'test_retrieval_k':[1 ,5 ,10 ,20 ],
 'test_retrieval_candidate_percentages':[0.5 ,1 ,3 ,5 ],
-'test_retrieval_first_expert_only':False ,
+'test_retrieval_first_expert_only':True ,
 'num_test_episodes':200 ,
 'num_cases_for_testing':500 ,
 }
