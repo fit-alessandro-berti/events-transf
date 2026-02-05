@@ -141,13 +141,13 @@ def _build_classifiers ():
     (
     "RandomForest",
     RandomForestClassifier (
-    n_estimators =600 ,
+    n_estimators =800 ,
     random_state =42 ,
     n_jobs =-1 ,
     class_weight ="balanced_subsample",
-    max_depth =14 ,
-    min_samples_leaf =3 ,
-    min_samples_split =6 ,
+    max_depth =8 ,
+    min_samples_leaf =5 ,
+    min_samples_split =10 ,
     max_features ="sqrt"
     ),
     ),
@@ -156,7 +156,7 @@ def _build_classifiers ():
     Pipeline ([
     ("scaler",StandardScaler ()),
     ("model",LinearSVC (
-    C =0.5 ,
+    C =0.1 ,
     class_weight ="balanced",
     tol =1e-4 ,
     max_iter =20000 ,
@@ -170,20 +170,20 @@ def _build_regressors ():
     (
     "RandomForest",
     RandomForestRegressor (
-    n_estimators =600 ,
+    n_estimators =800 ,
     random_state =42 ,
     n_jobs =-1 ,
-    max_depth =16 ,
-    min_samples_leaf =3 ,
-    min_samples_split =6 ,
-    max_features =0.7
+    max_depth =10 ,
+    min_samples_leaf =6 ,
+    min_samples_split =10 ,
+    max_features =0.5
     ),
     ),
     (
     "StandardScaler+Ridge",
     Pipeline ([
     ("scaler",StandardScaler ()),
-    ("model",Ridge (alpha =15.0 )),
+    ("model",Ridge (alpha =50.0 )),
     ]),
     ),
     (
@@ -192,9 +192,9 @@ def _build_regressors ():
     random_state =42 ,
     max_depth =3 ,
     learning_rate =0.05 ,
-    max_iter =600 ,
-    min_samples_leaf =8 ,
-    l2_regularization =0.5 ,
+    max_iter =400 ,
+    min_samples_leaf =10 ,
+    l2_regularization =2.0 ,
     early_stopping =True ,
     validation_fraction =0.2 ,
     n_iter_no_change =20
