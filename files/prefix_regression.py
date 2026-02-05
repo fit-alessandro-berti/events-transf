@@ -2,7 +2,7 @@
 import argparse
 import random
 from collections import defaultdict
-from math import sqrt
+from math import exp, log, sqrt
 
 import numpy as np
 import pm4py
@@ -15,7 +15,20 @@ from sklearn.metrics import r2_score
 from sklearn.model_selection import train_test_split
 
 from prefix_feature_extraction import build_prefix_features_remaining_time
-from time_transf import transform_time, inverse_transform_time
+
+MIN_TIME_HOURS = 1e-9
+
+
+def transform_time_nn(time_in_hours):
+    return log(max(time_in_hours, MIN_TIME_HOURS))
+
+
+def inverse_transform_time_nn(transformed_time):
+    values = np.asarray(transformed_time, dtype=float)
+    if values.ndim == 0:
+        return exp(values.item())
+    flat = [exp(v) for v in values.ravel()]
+    return np.asarray(flat, dtype=float).reshape(values.shape)
 
 
 def select_components_by_cumulative_variance(
@@ -74,12 +87,8 @@ def train_pca_knn_regressor(features, targets):
 
 
 def compute_regression_metrics(targets_transformed, predictions_transformed, case_ids):
-    targets_hours = inverse_transform_time(
-        np.asarray(targets_transformed, dtype=float)
-    )
-    preds_hours = inverse_transform_time(
-        np.asarray(predictions_transformed, dtype=float)
-    )
+    targets_hours = inverse_transform_time_nn(targets_transformed)
+    preds_hours = inverse_transform_time_nn(predictions_transformed)
     preds_hours[preds_hours < 0] = 0
 
     abs_errors = [abs(y_true - y_hat) for y_true, y_hat in zip(targets_hours, preds_hours)]
@@ -125,7 +134,7 @@ def main():
     parser.add_argument(
         "log_path",
         nargs="?",
-        default="C:/receipt.xes",
+        default="C:/roadtraffic_10000.xes.gz",
         help="Path to the XES log (default: tests/input_data/receipt.xes)",
     )
     parser.add_argument(
@@ -163,7 +172,9 @@ def main():
     candidate_percentages = [0.5, 1, 3, 5]
 
     targets_hours = np.asarray(target, dtype=float) / 3600.0
-    targets_transformed = transform_time(targets_hours).tolist()
+    targets_transformed = [
+        transform_time_nn(value) for value in targets_hours.tolist()
+    ]
 
     X_train, X_test, y_train, y_test, _, case_test = train_test_split(
         feature, targets_transformed, case_ids, test_size=0.2, random_state=42
