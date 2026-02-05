@@ -5,6 +5,11 @@ import numpy as np
 from sklearn .metrics import accuracy_score ,mean_absolute_error ,r2_score ,mean_squared_error
 from sklearn .model_selection import train_test_split
 from sklearn .ensemble import RandomForestClassifier ,RandomForestRegressor
+from sklearn .kernel_ridge import KernelRidge
+from sklearn .linear_model import ElasticNet ,Ridge ,RidgeClassifier ,SGDRegressor
+from sklearn .pipeline import Pipeline
+from sklearn .preprocessing import StandardScaler
+from sklearn .svm import LinearSVC ,SVC
 from tqdm import tqdm
 from time_transf import inverse_transform_time
 from utils .retrieval_utils import find_knn_indices
@@ -130,7 +135,90 @@ def _report_inter_expert_metrics (expert_task_embeddings ,task_type :str ):
             f"  - Inter-expert metrics ({task_type }) {expert_a } vs {expert_b }: "
             f"mean_cos={mean_cos :.4f} | mean_l2={mean_l2 :.4f}"
             )
-def _report_rf_metrics (
+def _build_classifiers ():
+    return [
+    (
+    "RandomForest",
+    RandomForestClassifier (
+    n_estimators =300 ,
+    random_state =42 ,
+    n_jobs =-1 ,
+    class_weight ="balanced"
+    ),
+    ),
+    (
+    "SVC(rbf)",
+    Pipeline ([
+    ("scaler",StandardScaler ()),
+    ("model",SVC (kernel ="rbf",class_weight ="balanced")),
+    ]),
+    ),
+    (
+    "LinearSVC",
+    Pipeline ([
+    ("scaler",StandardScaler ()),
+    ("model",LinearSVC (class_weight ="balanced")),
+    ]),
+    ),
+    (
+    "RidgeClassifier",
+    Pipeline ([
+    ("scaler",StandardScaler ()),
+    ("model",RidgeClassifier (class_weight ="balanced")),
+    ]),
+    ),
+    ]
+def _build_regressors ():
+    return [
+    (
+    "RandomForest",
+    RandomForestRegressor (
+    n_estimators =300 ,
+    random_state =42 ,
+    n_jobs =-1
+    ),
+    ),
+    (
+    "Ridge",
+    Pipeline ([
+    ("scaler",StandardScaler ()),
+    ("model",Ridge ()),
+    ]),
+    ),
+    (
+    "ElasticNet",
+    Pipeline ([
+    ("scaler",StandardScaler ()),
+    ("model",ElasticNet (random_state =42 ,max_iter =5000)),
+    ]),
+    ),
+    (
+    "SGDRegressor(huber)",
+    Pipeline ([
+    ("scaler",StandardScaler ()),
+    ("model",SGDRegressor (loss ="huber",random_state =42 ,max_iter =2000 ,tol =1e-3)),
+    ]),
+    ),
+    (
+    "KernelRidge(rbf)",
+    Pipeline ([
+    ("scaler",StandardScaler ()),
+    ("model",KernelRidge (kernel ="rbf")),
+    ]),
+    ),
+    ]
+def _compute_case_metrics (labels_hours ,preds_hours ,case_test ):
+    per_case_abs ={}
+    per_case_sq ={}
+    for case_id ,y_true ,y_hat in zip (case_test ,labels_hours ,preds_hours ):
+        per_case_abs .setdefault (case_id ,[]).append (abs (y_true -y_hat ))
+        per_case_sq .setdefault (case_id ,[]).append ((y_true -y_hat )**2 )
+    case_mae_values =[sum (vals )/len (vals )for vals in per_case_abs .values ()]
+    case_rmse_values =[np .sqrt (sum (vals )/len (vals ))for vals in per_case_sq .values ()]
+    mae =float (np .mean (case_mae_values ))if case_mae_values else float ("nan")
+    rmse =float (np .mean (case_rmse_values ))if case_rmse_values else float ("nan")
+    return mae ,rmse ,len (per_case_abs )
+def _report_sklearn_metrics (
 expert_name :str ,
 task_type :str ,
 embeddings :torch .Tensor ,
@@ -146,7 +234,7 @@ case_ids :np .ndarray =None
     if task_type =='classification':
         unique_labels ,counts =np .unique (y ,return_counts =True )
         if unique_labels .size <2 :
-            print (f"  - [{expert_name }] RF metrics skipped (classification): only one class.")
+            print (f"  - [{expert_name }] sklearn metrics skipped (classification): only one class.")
             return
         stratify =y if counts .min ()>=2 else None
         try :
@@ -157,47 +245,47 @@ case_ids :np .ndarray =None
             x_train ,x_test ,y_train ,y_test =train_test_split (
             x ,y ,test_size =0.2 ,random_state =42 ,stratify =None
             )
-        clf =RandomForestClassifier (
-        n_estimators =300 ,
-        random_state =42 ,
-        n_jobs =-1 ,
-        class_weight ="balanced"
-        )
-        clf .fit (x_train ,y_train )
-        preds =clf .predict (x_test )
-        acc =accuracy_score (y_test ,preds )
-        print (f"  - [{expert_name }] RF (classification, 80/20): Accuracy={acc :.4f} (n={len (y_test )})")
+        for model_name ,clf in _build_classifiers ():
+            try :
+                clf .fit (x_train ,y_train )
+                preds =clf .predict (x_test )
+                acc =accuracy_score (y_test ,preds )
+                print (
+                f"  - [{expert_name }] {model_name } (classification, 80/20): "
+                f"Accuracy={acc :.4f} (n={len (y_test )})"
+                )
+            except Exception as e :
+                print (
+                f"  - [{expert_name }] {model_name } (classification) failed: {e }"
+                )
     else :
         if case_ids is None :
             case_ids =np .arange (len (y ))
         x_train ,x_test ,y_train ,y_test ,_ ,case_test =train_test_split (
         x ,y ,case_ids ,test_size =0.2 ,random_state =42
         )
-        reg =RandomForestRegressor (
-        n_estimators =300 ,
-        random_state =42 ,
-        n_jobs =-1
-        )
-        reg .fit (x_train ,y_train )
-        preds =reg .predict (x_test )
-        preds_hours =inverse_transform_time (np .array (preds ))
-        preds_hours [preds_hours <0 ]=0
-        labels_hours =inverse_transform_time (np .array (y_test ))
-        per_case_abs ={}
-        per_case_sq ={}
-        for case_id ,y_true ,y_hat in zip (case_test ,labels_hours ,preds_hours ):
-            per_case_abs .setdefault (case_id ,[]).append (abs (y_true -y_hat ))
-            per_case_sq .setdefault (case_id ,[]).append ((y_true -y_hat )**2 )
-        case_mae_values =[sum (vals )/len (vals )for vals in per_case_abs .values ()]
-        case_rmse_values =[np .sqrt (sum (vals )/len (vals ))for vals in per_case_sq .values ()]
-        mae =float (np .mean (case_mae_values ))if case_mae_values else float ("nan")
-        rmse =float (np .mean (case_rmse_values ))if case_rmse_values else float ("nan")
-        r2 =r2_score (labels_hours ,preds_hours )
-        print (
-        f"  - [{expert_name }] RF (regression, 80/20): "
-        f"MAE={mae :.4f} | RMSE={rmse :.4f} | R2={r2 :.4f} "
-        f"(cases={len (per_case_abs )} | samples={len (y_test )})"
-        )
+        for model_name ,reg in _build_regressors ():
+            try :
+                reg .fit (x_train ,y_train )
+                preds =reg .predict (x_test )
+                preds =np .asarray (preds ).reshape (-1 )
+                preds_hours =inverse_transform_time (preds )
+                preds_hours [preds_hours <0 ]=0
+                labels_hours =inverse_transform_time (np .array (y_test ))
+                mae ,rmse ,num_cases =_compute_case_metrics (labels_hours ,preds_hours ,case_test )
+                if len (labels_hours )<2 :
+                    r2 =float ("nan")
+                else :
+                    r2 =r2_score (labels_hours ,preds_hours )
+                print (
+                f"  - [{expert_name }] {model_name } (regression, 80/20): "
+                f"MAE={mae :.4f} | RMSE={rmse :.4f} | R2={r2 :.4f} "
+                f"(cases={num_cases } | samples={len (y_test )})"
+                )
+            except Exception as e :
+                print (
+                f"  - [{expert_name }] {model_name } (regression) failed: {e }"
+                )
 def _get_all_test_embeddings (model ,test_tasks_list ,batch_size =64 ):
     all_embeddings =[]
     all_labels =[]
@@ -438,4 +526,4 @@ candidate_percentages =None
                         f"R-squared: {r2_score (labels ,preds ):.4f} | "
                         f"Avg. Confidence: {avg_conf :.4f}"
                         )
-            _report_rf_metrics (expert_name ,task_type ,all_embeddings ,all_labels ,all_case_ids )
+            _report_sklearn_metrics (expert_name ,task_type ,all_embeddings ,all_labels ,all_case_ids )
