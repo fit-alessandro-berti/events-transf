@@ -151,7 +151,7 @@ def _build_classifiers ():
     "StandardScaler+LinearSVC",
     Pipeline ([
     ("scaler",StandardScaler ()),
-    ("model",LinearSVC (class_weight ="balanced")),
+    ("model",LinearSVC (class_weight ="balanced",max_iter =10000 ,tol =1e-3)),
     ]),
     ),
     ]
