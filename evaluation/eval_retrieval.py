@@ -2,11 +2,11 @@ import torch
 import torch .nn .functional as F
 import random
 import numpy as np
-from sklearn .metrics import accuracy_score ,mean_absolute_error ,r2_score ,mean_squared_error
+from sklearn .metrics import accuracy_score ,mean_absolute_error ,r2_score
 from sklearn .model_selection import train_test_split
 from sklearn .ensemble import RandomForestClassifier ,RandomForestRegressor
 from sklearn .kernel_approximation import Nystroem
-from sklearn .linear_model import Ridge ,SGDClassifier ,SGDRegressor
+from sklearn .linear_model import Ridge ,SGDClassifier
 from sklearn .pipeline import Pipeline
 from sklearn .preprocessing import StandardScaler
 from tqdm import tqdm
@@ -90,8 +90,8 @@ def _report_inter_expert_metrics (expert_task_embeddings ,task_type :str ):
         data_b =expert_task_embeddings [expert_b ].get (task_type )
         if data_a is None or data_b is None :
             continue
-        emb_a ,labels_a ,_ =data_a
-        emb_b ,labels_b ,_ =data_b
+        emb_a ,labels_a ,_ ,_ =data_a
+        emb_b ,labels_b ,_ ,_ =data_b
         if emb_a .shape [0 ]!=emb_b .shape [0 ]:
             print (
             f"  - Inter-expert metrics skipped for {expert_a } vs {expert_b } "
@@ -183,18 +183,45 @@ def _compute_case_metrics (labels_hours ,preds_hours ,case_test ):
     mae =float (np .mean (case_mae_values ))if case_mae_values else float ("nan")
     rmse =float (np .mean (case_rmse_values ))if case_rmse_values else float ("nan")
     return mae ,rmse ,len (per_case_abs )
+def _subsample_training_set (x_train ,y_train ,train_percentage ,stratify =None ):
+    if train_percentage is None :
+        return x_train ,y_train
+    try :
+        train_percentage =float (train_percentage )
+    except (TypeError ,ValueError ):
+        return x_train ,y_train
+    if train_percentage >=100 or len (x_train )<2 :
+        return x_train ,y_train
+    train_percentage =max (1.0 ,min (train_percentage ,100.0 ))
+    sample_size =max (1 ,int (np .ceil (len (x_train )*(train_percentage /100.0 ))))
+    if sample_size >=len (x_train ):
+        return x_train ,y_train
+    try :
+        x_sub ,_ ,y_sub ,_ =train_test_split (
+        x_train ,
+        y_train ,
+        train_size =sample_size ,
+        random_state =42 ,
+        stratify =stratify
+        )
+        return x_sub ,y_sub
+    except ValueError :
+        rng =np .random .default_rng (42 )
+        idx =rng .choice (len (x_train ),size =sample_size ,replace =False )
+        return x_train [idx ],y_train [idx ]
 def _report_sklearn_metrics (
 expert_name :str ,
 task_type :str ,
 embeddings :torch .Tensor ,
 labels :torch .Tensor ,
-case_ids :np .ndarray =None
+case_ids :np .ndarray =None ,
+train_percentage =100
 ):
     x =embeddings .detach ().cpu ().numpy ()
     y =labels .detach ().cpu ().numpy ()
     num_samples =x .shape [0 ]
     if num_samples <2 :
-        print (f"  - [{expert_name }] RF metrics skipped ({task_type }): not enough samples.")
+        print (f"  - [{expert_name }] sklearn metrics skipped ({task_type }): not enough samples.")
         return
     if task_type =='classification':
         unique_labels ,counts =np .unique (y ,return_counts =True )
@@ -210,13 +237,20 @@ case_ids :np .ndarray =None
             x_train ,x_test ,y_train ,y_test =train_test_split (
             x ,y ,test_size =0.2 ,random_state =42 ,stratify =None
             )
+        x_train ,y_train =_subsample_training_set (x_train ,y_train ,train_percentage ,stratify )
+        if len (x_train )<2 :
+            print (f"  - [{expert_name }] sklearn metrics skipped (classification): not enough training samples.")
+            return
+        if np .unique (y_train ).size <2 :
+            print (f"  - [{expert_name }] sklearn metrics skipped (classification): training set has one class.")
+            return
         for model_name ,clf in _build_classifiers ():
             try :
                 clf .fit (x_train ,y_train )
                 preds =clf .predict (x_test )
                 acc =accuracy_score (y_test ,preds )
                 print (
-                f"  - [{expert_name }] {model_name } (classification, 80/20): "
+                f"  - [{expert_name }] {model_name } (classification, 80/20, train={train_percentage }%): "
                 f"Accuracy={acc :.4f} (n={len (y_test )})"
                 )
             except Exception as e :
@@ -229,6 +263,10 @@ case_ids :np .ndarray =None
         x_train ,x_test ,y_train ,y_test ,_ ,case_test =train_test_split (
         x ,y ,case_ids ,test_size =0.2 ,random_state =42
         )
+        x_train ,y_train =_subsample_training_set (x_train ,y_train ,train_percentage )
+        if len (x_train )<2 :
+            print (f"  - [{expert_name }] sklearn metrics skipped (regression): not enough training samples.")
+            return
         for model_name ,reg in _build_regressors ():
             try :
                 reg .fit (x_train ,y_train )
@@ -241,9 +279,9 @@ case_ids :np .ndarray =None
                 if len (labels_hours )<2 :
                     r2 =float ("nan")
                 else :
-                    r2 =r2_score (labels_hours ,preds_hours )
+                r2 =r2_score (labels_hours ,preds_hours )
                 print (
-                f"  - [{expert_name }] {model_name } (regression, 80/20): "
+                f"  - [{expert_name }] {model_name } (regression, 80/20, train={train_percentage }%): "
                 f"MAE={mae :.4f} | RMSE={rmse :.4f} | R2={r2 :.4f} "
                 f"(cases={num_cases } | samples={len (y_test )})"
                 )
@@ -290,7 +328,8 @@ model ,
 test_tasks ,
 num_retrieval_k_list ,
 num_test_queries =200 ,
-candidate_percentages =None
+candidate_percentages =None ,
+sklearn_train_percentage =100
 ):
     print ("\n🔬 Starting Retrieval-Augmented Evaluation...")
     model .eval ()
@@ -312,12 +351,12 @@ candidate_percentages =None
             if not task_data :
                 print (f"Skipping {task_type }: No test data available.")
                 continue
-            embeddings ,labels ,case_ids =_get_all_test_embeddings (expert ,task_data )
-            if embeddings is None :
+            embeddings_raw ,labels ,case_ids =_get_all_test_embeddings (expert ,task_data )
+            if embeddings_raw is None :
                 return
             try :
-                has_nan =torch .isnan (embeddings ).any ().item ()
-                all_finite =torch .isfinite (embeddings ).all ().item ()
+                has_nan =torch .isnan (embeddings_raw ).any ().item ()
+                all_finite =torch .isfinite (embeddings_raw ).all ().item ()
                 print (f"  - [{expert_name }] Embedding sanity: has_nan={has_nan }, all_finite={all_finite }")
             except Exception as e :
                 print (f"  - [{expert_name }] Embedding sanity check failed: {e }")
@@ -329,19 +368,31 @@ candidate_percentages =None
                     top_idx =np .argsort (case_counts )[-top_k :][::-1 ]
                     top_cases =[(unique_cases [i ],int (case_counts [i ]))for i in top_idx ]
                     print (f"  - [{expert_name }] Top case_id counts: {top_cases }")
-            embeddings =F .normalize (embeddings ,p =2 ,dim =1 )
+            embeddings_norm =F .normalize (embeddings_raw ,p =2 ,dim =1 )
             if task_type =='classification':
-                _report_similarity_metrics (embeddings ,labels ,label =expert_name )
-            expert_task_embeddings [expert_name ][task_type ]=(embeddings ,labels ,case_ids )
-            print (f"  - [{expert_name }] Pre-computed {embeddings .shape [0 ]} embeddings for {task_type }.")
+                _report_similarity_metrics (embeddings_norm ,labels ,label =expert_name )
+            expert_task_embeddings [expert_name ][task_type ]=(
+            embeddings_norm ,
+            labels ,
+            case_ids ,
+            embeddings_raw
+            )
+            print (f"  - [{expert_name }] Pre-computed {embeddings_norm .shape [0 ]} embeddings for {task_type }.")
     for task_type in test_tasks .keys ():
         _report_inter_expert_metrics (expert_task_embeddings ,task_type )
     for task_type in test_tasks .keys ():
         available_experts =[]
         for expert_name ,expert in experts_to_eval :
             if task_type in expert_task_embeddings .get (expert_name ,{}):
-                embeddings ,labels ,case_ids =expert_task_embeddings [expert_name ][task_type ]
-                available_experts .append ((expert_name ,expert ,embeddings ,labels ,case_ids ))
+                embeddings_norm ,labels ,case_ids ,embeddings_raw =expert_task_embeddings [expert_name ][task_type ]
+                available_experts .append ((
+                expert_name ,
+                expert ,
+                embeddings_norm ,
+                labels ,
+                case_ids ,
+                embeddings_raw
+                ))
         if not available_experts :
             continue
         base_num_samples =available_experts [0 ][2 ].shape [0 ]
@@ -370,9 +421,9 @@ candidate_percentages =None
                     mask_np =np .ones (base_num_samples ,dtype =bool )
                     mask_np [candidate_pool_indices ]=False
                     candidate_pool_masks [pct ]=np .where (mask_np )[0 ]
-        for expert_name ,expert ,all_embeddings ,all_labels ,all_case_ids in available_experts :
+        for expert_name ,expert ,all_embeddings_norm ,all_labels ,all_case_ids ,all_embeddings_raw in available_experts :
             print (f"\n--- Evaluating task: {task_type } | {expert_name } ---")
-            num_total_samples =all_embeddings .shape [0 ]
+            num_total_samples =all_embeddings_norm .shape [0 ]
             if num_total_samples <2 :
                 print (f"Skipping {task_type } | {expert_name }: Not enough samples to evaluate.")
                 continue
@@ -412,8 +463,8 @@ candidate_percentages =None
                 if non_candidate_indices_np is None :
                     non_candidate_indices_tensor =None
                 else :
-                    non_candidate_indices_tensor =torch .from_numpy (non_candidate_indices_np ).to (
-                    all_embeddings .device
+                non_candidate_indices_tensor =torch .from_numpy (non_candidate_indices_np ).to (
+                    all_embeddings_norm .device
                     )
                 if non_candidate_indices_tensor is not None :
                     print (f"  - Candidate pool size: {num_total_samples -len (non_candidate_indices_np )} / {num_total_samples }")
@@ -423,7 +474,7 @@ candidate_percentages =None
                         continue
                     all_preds ,all_true_labels ,all_confidences =[],[],[]
                     for query_idx in query_indices :
-                        query_embedding =all_embeddings [query_idx :query_idx +1 ]
+                        query_embedding =all_embeddings_norm [query_idx :query_idx +1 ]
                         query_label =all_labels [query_idx ]
                         query_case_id =all_case_ids [query_idx ]
                         same_case_indices_np =np .where (all_case_ids ==query_case_id )[0 ]
@@ -431,22 +482,22 @@ candidate_percentages =None
                             if same_case_indices_np .size ==0 :
                                 mask_tensor =None
                             else :
-                                mask_tensor =torch .from_numpy (same_case_indices_np ).to (all_embeddings .device )
+                                mask_tensor =torch .from_numpy (same_case_indices_np ).to (all_embeddings_norm .device )
                         else :
                             if same_case_indices_np .size ==0 :
                                 mask_tensor =non_candidate_indices_tensor
                             else :
-                                same_case_tensor =torch .from_numpy (same_case_indices_np ).to (all_embeddings .device )
+                                same_case_tensor =torch .from_numpy (same_case_indices_np ).to (all_embeddings_norm .device )
                                 mask_tensor =torch .cat ([non_candidate_indices_tensor ,same_case_tensor ])
                         top_k_indices =find_knn_indices (
                         query_embedding ,
-                        all_embeddings ,
+                        all_embeddings_norm ,
                         k =k ,
                         indices_to_mask =mask_tensor
                         )
                         if top_k_indices .numel ()==0 :
                             continue
-                        support_embeddings =all_embeddings [top_k_indices ]
+                        support_embeddings =all_embeddings_norm [top_k_indices ]
                         support_labels =all_labels [top_k_indices ]
                         with torch .no_grad ():
                             if task_type =='classification':
@@ -491,10 +542,23 @@ candidate_percentages =None
                         f"R-squared: {r2_score (labels ,preds ):.4f} | "
                         f"Avg. Confidence: {avg_conf :.4f}"
                         )
+                if non_candidate_indices_np is None :
+                    sklearn_embeddings =all_embeddings_raw
+                    sklearn_labels =all_labels
+                    sklearn_case_ids =all_case_ids
+                else :
+                    candidate_mask =np .ones (num_total_samples ,dtype =bool )
+                    candidate_mask [non_candidate_indices_np ]=False
+                    candidate_indices =np .where (candidate_mask )[0 ]
+                    candidate_tensor =torch .from_numpy (candidate_indices ).to (all_embeddings_raw .device )
+                    sklearn_embeddings =all_embeddings_raw .index_select (0 ,candidate_tensor )
+                    sklearn_labels =all_labels .index_select (0 ,candidate_tensor )
+                    sklearn_case_ids =None if all_case_ids is None else all_case_ids [candidate_indices ]
                 _report_sklearn_metrics (
                 f"{expert_name } | pct={pct }%",
                 task_type ,
-                all_embeddings ,
-                all_labels ,
-                all_case_ids
+                sklearn_embeddings ,
+                sklearn_labels ,
+                sklearn_case_ids ,
+                train_percentage =sklearn_train_percentage
                 )
