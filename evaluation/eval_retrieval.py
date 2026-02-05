@@ -148,14 +148,6 @@ def _build_classifiers ():
     ),
     ),
     (
-    "Nystroem+SGDClassifier",
-    Pipeline ([
-    # ("scaler",StandardScaler ()),
-    ("nystroem",Nystroem (kernel ="rbf",random_state =42 )),
-    ("model",SGDClassifier (class_weight ="balanced",random_state =42 ,max_iter =2000 ,tol =1e-3)),
-    ]),
-    ),
-    (
     "StandardScaler+LinearSVC",
     Pipeline ([
     ("scaler",StandardScaler ()),
