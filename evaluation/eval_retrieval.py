@@ -5,7 +5,6 @@ import numpy as np
 from sklearn .metrics import accuracy_score ,mean_absolute_error ,r2_score
 from sklearn .model_selection import train_test_split
 from sklearn .ensemble import RandomForestClassifier ,RandomForestRegressor
-from sklearn .decomposition import PCA
 from sklearn .ensemble import HistGradientBoostingRegressor
 from sklearn .kernel_approximation import Nystroem
 from sklearn .linear_model import HuberRegressor ,LogisticRegression ,Ridge ,SGDClassifier
@@ -250,25 +249,7 @@ train_percentage =100
         if np .unique (y_train ).size <2 :
             print (f"  - [{expert_name }] sklearn metrics skipped (classification): training set has one class.")
             return
-        n_features =x_train .shape [1 ]
-        n_train =x_train .shape [0 ]
-        pca_dim =min (32 ,n_train -1 ,n_features )
-        extra_classifiers =[]
-        if pca_dim >=2 and pca_dim <n_features :
-            extra_classifiers .append ((
-            f"StandardScaler+PCA{pca_dim }(whiten)+LinearSVC",
-            Pipeline ([
-            ("scaler",StandardScaler ()),
-            ("pca",PCA (
-            n_components =pca_dim ,
-            svd_solver ="randomized",
-            whiten =True ,
-            random_state =42
-            )),
-            ("model",LinearSVC (class_weight ="balanced",max_iter =10000 ,tol =1e-3)),
-            ])
-            ))
-        for model_name ,clf in (_build_classifiers ()+extra_classifiers ):
+        for model_name ,clf in _build_classifiers ():
             try :
                 clf .fit (x_train ,y_train )
                 preds =clf .predict (x_test )
@@ -291,25 +272,7 @@ train_percentage =100
         if len (x_train )<2 :
             print (f"  - [{expert_name }] sklearn metrics skipped (regression): not enough training samples.")
             return
-        n_features =x_train .shape [1 ]
-        n_train =x_train .shape [0 ]
-        pca_dim =min (32 ,n_train -1 ,n_features )
-        extra_regressors =[]
-        if pca_dim >=2 and pca_dim <n_features :
-            extra_regressors .append ((
-            f"StandardScaler+PCA{pca_dim }(whiten)+Ridge",
-            Pipeline ([
-            ("scaler",StandardScaler ()),
-            ("pca",PCA (
-            n_components =pca_dim ,
-            svd_solver ="randomized",
-            whiten =True ,
-            random_state =42
-            )),
-            ("model",Ridge ()),
-            ])
-            ))
-        for model_name ,reg in (_build_regressors ()+extra_regressors ):
+        for model_name ,reg in _build_regressors ():
             try :
                 reg .fit (x_train ,y_train )
                 preds =reg .predict (x_test )
