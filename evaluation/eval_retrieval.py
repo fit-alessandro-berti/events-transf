@@ -141,27 +141,17 @@ def _build_classifiers ():
     (
     "RandomForest",
     RandomForestClassifier (
-    n_estimators =600 ,
+    n_estimators =300 ,
     random_state =42 ,
     n_jobs =-1 ,
-    class_weight ="balanced_subsample",
-    max_depth =14 ,
-    min_samples_leaf =3 ,
-    min_samples_split =6 ,
-    max_features ="sqrt"
+    class_weight ="balanced"
     ),
     ),
     (
     "StandardScaler+LinearSVC",
     Pipeline ([
     ("scaler",StandardScaler ()),
-    ("model",LinearSVC (
-    C =0.5 ,
-    class_weight ="balanced",
-    tol =1e-4 ,
-    max_iter =20000 ,
-    dual =True
-    )),
+    ("model",LinearSVC (class_weight ="balanced",max_iter =10000 ,tol =1e-3)),
     ]),
     ),
     ]
@@ -170,35 +160,21 @@ def _build_regressors ():
     (
     "RandomForest",
     RandomForestRegressor (
-    n_estimators =600 ,
+    n_estimators =300 ,
     random_state =42 ,
-    n_jobs =-1 ,
-    max_depth =16 ,
-    min_samples_leaf =3 ,
-    min_samples_split =6 ,
-    max_features =0.7
+    n_jobs =-1
     ),
     ),
     (
     "StandardScaler+Ridge",
     Pipeline ([
     ("scaler",StandardScaler ()),
-    ("model",Ridge (alpha =15.0 )),
+    ("model",Ridge ()),
     ]),
     ),
     (
     "HistGradientBoostingRegressor",
-    HistGradientBoostingRegressor (
-    random_state =42 ,
-    max_depth =3 ,
-    learning_rate =0.05 ,
-    max_iter =600 ,
-    min_samples_leaf =8 ,
-    l2_regularization =0.5 ,
-    early_stopping =True ,
-    validation_fraction =0.2 ,
-    n_iter_no_change =20
-    ),
+    HistGradientBoostingRegressor (random_state =42 ),
     ),
     ]
 def _compute_case_metrics (labels_hours ,preds_hours ,case_test ):
