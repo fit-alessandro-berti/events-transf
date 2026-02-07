@@ -40,7 +40,7 @@ CONFIG ={
 'num_queries':10 ,
 'num_shots_test':[1 ,5 ,10 ,20 ],
 'lr':1e-4 ,
-'epochs':30 ,
+'epochs':15 ,
 'episodes_per_epoch':1000 ,
 'episodic_label_shuffle':'yes', #no, yes, mixed
 'training_strategy':'mixed', #episodic, retrieval, mixed
