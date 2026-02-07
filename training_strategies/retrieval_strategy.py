@@ -1,4 +1,5 @@
 import random
+from contextlib import nullcontext
 from collections import defaultdict
 
 import numpy as np
@@ -6,6 +7,19 @@ import torch
 import torch.nn.functional as F
 
 from utils.retrieval_utils import find_knn_indices
+
+
+def _encode_case_ids_to_int(case_ids_np: np.ndarray) -> torch.Tensor:
+    """case_ids may be strings/objects -> map to contiguous ints for tensor ops."""
+    uniq = list(dict.fromkeys(case_ids_np.tolist()))
+    mapping = {cid: i for i, cid in enumerate(uniq)}
+    return torch.tensor([mapping[cid] for cid in case_ids_np.tolist()], dtype=torch.long)
+
+
+def _autocast_disabled_for(device: torch.device):
+    if device.type == "cuda":
+        return torch.amp.autocast(device_type="cuda", enabled=False)
+    return nullcontext()
 
 
 def _sample_balanced_classification_batch(task_pool, batch_size, min_per_class=2):
@@ -56,6 +70,89 @@ def _sample_balanced_classification_batch(task_pool, batch_size, min_per_class=2
     return batch[:batch_size]
 
 
+def _supcon_loss(
+    z: torch.Tensor,
+    labels: torch.Tensor,
+    case_ids_int: torch.Tensor,
+    temperature: float = 0.07,
+):
+    """
+    Supervised contrastive loss.
+    Positives are same-label, different-case pairs.
+    Same-case pairs are removed from denominator by heavy negative masking.
+    """
+    device = z.device
+    temp = max(float(temperature), 1e-6)
+
+    with _autocast_disabled_for(device):
+        z = F.normalize(z.float(), p=2, dim=1)
+        batch_size = z.size(0)
+
+        logits = (z @ z.t()) / temp
+
+        self_mask = torch.eye(batch_size, device=device, dtype=torch.bool)
+        same_case = case_ids_int.view(-1, 1).eq(case_ids_int.view(1, -1))
+        ignore = self_mask | same_case
+
+        # Use a large finite negative value to avoid fp16 overflow / NaNs in AMP paths.
+        logits = logits.masked_fill(ignore, -1e4)
+
+        labels = labels.view(-1, 1)
+        pos_mask = labels.eq(labels.t()) & (~ignore)
+        pos_counts = pos_mask.sum(dim=1)
+        valid = pos_counts > 0
+        if not valid.any():
+            return None
+
+        log_prob = F.log_softmax(logits, dim=1)
+        loss_per = -(log_prob * pos_mask.float()).sum(dim=1) / pos_counts.clamp_min(1).float()
+        return loss_per[valid].mean()
+
+
+def _regression_neighbor_contrastive(
+    z: torch.Tensor,
+    y: torch.Tensor,
+    case_ids_int: torch.Tensor,
+    temperature: float = 0.07,
+    pos_k: int = 2,
+):
+    """
+    Target-neighborhood contrastive objective for regression.
+    Positives per anchor are nearest labels in target space (excluding same case).
+    """
+    device = z.device
+    temp = max(float(temperature), 1e-6)
+    pos_k = max(int(pos_k), 1)
+
+    with _autocast_disabled_for(device):
+        z = F.normalize(z.float(), p=2, dim=1)
+        y = y.float().view(-1)
+        batch_size = z.size(0)
+
+        logits = (z @ z.t()) / temp
+
+        self_mask = torch.eye(batch_size, device=device, dtype=torch.bool)
+        same_case = case_ids_int.view(-1, 1).eq(case_ids_int.view(1, -1))
+        ignore = self_mask | same_case
+        logits = logits.masked_fill(ignore, -1e4)
+
+        log_prob = F.log_softmax(logits, dim=1)
+
+        losses = []
+        for i in range(batch_size):
+            candidates = (~ignore[i]).nonzero(as_tuple=False).squeeze(1)
+            if candidates.numel() == 0:
+                continue
+            diffs = (y[candidates] - y[i]).abs()
+            k_eff = min(pos_k, int(candidates.numel()))
+            positives = candidates[torch.topk(diffs, k_eff, largest=False).indices]
+            losses.append(-log_prob[i, positives].mean())
+
+        if not losses:
+            return None
+        return torch.stack(losses).mean()
+
+
 def run_retrieval_step(model, task_data_pool, task_type, config):
     progress_bar_task = f"retrieval_{task_type}"
     retrieval_k_train = int(config.get("retrieval_train_k", 5))
@@ -81,6 +178,24 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
 
     all_embeddings_norm = F.normalize(all_embeddings, p=2, dim=1)
     all_embeddings_norm_detached = all_embeddings_norm.detach()
+
+    contrastive_w = float(config.get("retrieval_contrastive_weight", 0.2))
+    contrastive_temp = float(config.get("retrieval_contrastive_temp", 0.07))
+    contrastive_loss = None
+
+    if contrastive_w > 0:
+        case_ids_int = _encode_case_ids_to_int(batch_case_ids).to(device)
+        if task_type == "classification":
+            labels_t = torch.as_tensor(batch_labels, dtype=torch.long, device=device)
+            contrastive_loss = _supcon_loss(
+                all_embeddings, labels_t, case_ids_int, temperature=contrastive_temp
+            )
+        else:
+            y_t = torch.as_tensor(batch_labels, dtype=torch.float32, device=device)
+            pos_k = int(config.get("retrieval_regression_pos_k", 2))
+            contrastive_loss = _regression_neighbor_contrastive(
+                all_embeddings, y_t, case_ids_int, temperature=contrastive_temp, pos_k=pos_k
+            )
 
     total_loss_for_batch = 0.0
     queries_processed = 0
@@ -163,9 +278,12 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
             total_loss_for_batch = total_loss_for_batch + loss
             queries_processed += 1
 
+    loss_out = None
     if queries_processed > 0:
         loss_out = total_loss_for_batch / queries_processed
-    else:
-        loss_out = None
+        if contrastive_loss is not None:
+            loss_out = loss_out + (contrastive_w * contrastive_loss)
+    elif contrastive_loss is not None:
+        loss_out = contrastive_w * contrastive_loss
 
     return loss_out, progress_bar_task
