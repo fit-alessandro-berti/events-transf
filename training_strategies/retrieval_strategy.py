@@ -8,13 +8,6 @@ import torch.nn.functional as F
 from utils.retrieval_utils import find_knn_indices
 
 
-def _encode_case_ids_to_int(case_ids_np: np.ndarray) -> torch.Tensor:
-    """case_ids may be strings/objects -> map to ints for tensor ops."""
-    uniq = list(dict.fromkeys(case_ids_np.tolist()))
-    mapping = {cid: i for i, cid in enumerate(uniq)}
-    return torch.tensor([mapping[cid] for cid in case_ids_np.tolist()], dtype=torch.long)
-
-
 def _sample_balanced_classification_batch(task_pool, batch_size, min_per_class=2):
     """
     Ensure selected classes appear at least min_per_class times, ideally across cases.
@@ -63,71 +56,6 @@ def _sample_balanced_classification_batch(task_pool, batch_size, min_per_class=2
     return batch[:batch_size]
 
 
-def _supcon_loss(z: torch.Tensor, labels: torch.Tensor, case_ids_int: torch.Tensor, temperature=0.07):
-    """Supervised contrastive loss with positives as same-label different-case pairs."""
-    device = z.device
-    z = F.normalize(z, p=2, dim=1)
-    batch_size = z.size(0)
-
-    logits = (z @ z.t()) / float(temperature)
-
-    self_mask = torch.eye(batch_size, device=device, dtype=torch.bool)
-    same_case = case_ids_int.view(-1, 1).eq(case_ids_int.view(1, -1))
-    ignore = self_mask | same_case
-    logits = logits.masked_fill(ignore, -1e9)
-
-    labels = labels.view(-1, 1)
-    pos_mask = labels.eq(labels.t()) & (~ignore)
-
-    pos_counts = pos_mask.sum(dim=1)
-    valid = pos_counts > 0
-    if not valid.any():
-        return None
-
-    log_prob = F.log_softmax(logits, dim=1)
-    loss_per = -(log_prob * pos_mask.float()).sum(dim=1) / pos_counts.clamp_min(1)
-    return loss_per[valid].mean()
-
-
-def _regression_neighbor_contrastive(
-    z: torch.Tensor,
-    y: torch.Tensor,
-    case_ids_int: torch.Tensor,
-    temperature=0.07,
-    pos_k=2,
-):
-    """Regression contrastive objective using closest targets as positives per anchor."""
-    device = z.device
-    z = F.normalize(z, p=2, dim=1)
-    batch_size = z.size(0)
-
-    logits = (z @ z.t()) / float(temperature)
-
-    self_mask = torch.eye(batch_size, device=device, dtype=torch.bool)
-    same_case = case_ids_int.view(-1, 1).eq(case_ids_int.view(1, -1))
-    ignore = self_mask | same_case
-    logits = logits.masked_fill(ignore, -1e9)
-
-    log_prob = F.log_softmax(logits, dim=1)
-
-    y = y.view(-1)
-    losses = []
-    for i in range(batch_size):
-        candidates = (~ignore[i]).nonzero(as_tuple=False).squeeze(1)
-        if candidates.numel() == 0:
-            continue
-
-        diffs = (y[candidates] - y[i]).abs()
-        k_eff = min(int(pos_k), int(candidates.numel()))
-        positives = candidates[torch.topk(diffs, k_eff, largest=False).indices]
-        losses.append(-log_prob[i, positives].mean())
-
-    if not losses:
-        return None
-
-    return torch.stack(losses).mean()
-
-
 def run_retrieval_step(model, task_data_pool, task_type, config):
     progress_bar_task = f"retrieval_{task_type}"
     retrieval_k_train = int(config.get("retrieval_train_k", 5))
@@ -153,22 +81,6 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
 
     all_embeddings_norm = F.normalize(all_embeddings, p=2, dim=1)
     all_embeddings_norm_detached = all_embeddings_norm.detach()
-
-    contrastive_w = float(config.get("retrieval_contrastive_weight", 0.2))
-    temperature = float(config.get("retrieval_contrastive_temp", 0.07))
-    contrastive_loss = None
-
-    if contrastive_w > 0:
-        case_ids_int = _encode_case_ids_to_int(batch_case_ids).to(device)
-        if task_type == "classification":
-            labels_t = torch.as_tensor(batch_labels, device=device, dtype=torch.long)
-            contrastive_loss = _supcon_loss(all_embeddings, labels_t, case_ids_int, temperature=temperature)
-        else:
-            y_t = torch.as_tensor(batch_labels, device=device, dtype=torch.float32)
-            pos_k = int(config.get("retrieval_regression_pos_k", 2))
-            contrastive_loss = _regression_neighbor_contrastive(
-                all_embeddings, y_t, case_ids_int, temperature=temperature, pos_k=pos_k
-            )
 
     total_loss_for_batch = 0.0
     queries_processed = 0
@@ -251,12 +163,9 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
             total_loss_for_batch = total_loss_for_batch + loss
             queries_processed += 1
 
-    loss_out = None
     if queries_processed > 0:
         loss_out = total_loss_for_batch / queries_processed
-        if contrastive_loss is not None:
-            loss_out = loss_out + contrastive_w * contrastive_loss
-    elif contrastive_loss is not None:
-        loss_out = contrastive_w * contrastive_loss
+    else:
+        loss_out = None
 
     return loss_out, progress_bar_task
