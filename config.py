@@ -46,6 +46,10 @@ CONFIG ={
 'training_strategy':'mixed', #episodic, retrieval, mixed
 'retrieval_train_k':5 ,
 'retrieval_train_batch_size':64 ,
+'retrieval_min_per_class':2 ,
+'retrieval_contrastive_weight':0.2 ,
+'retrieval_contrastive_temp':0.07 ,
+'retrieval_regression_pos_k':2 ,
 'test_mode':'retrieval_augmented',
 'test_retrieval_k':[1 ,5 ,10 ,20 ],
 'test_retrieval_candidate_percentages':[0.5 ,1 ,3 ,5 ],
