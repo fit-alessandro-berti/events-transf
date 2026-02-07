@@ -44,6 +44,16 @@ def fit_pca_with_variance_threshold(features, threshold=0.93):
     return n_components, pca
 
 
+def fit_pca_fixed_components(features, requested_components=3):
+    if not features:
+        raise ValueError("No features provided for PCA fitting.")
+    max_components = min(len(features), len(features[0]))
+    n_components = min(requested_components, max_components)
+    pca = PCA(n_components=n_components, random_state=42)
+    pca.fit(features)
+    return n_components, pca
+
+
 def compute_class_geometry_metrics(
     features, labels, rng, max_queries=1000, k_values=(5, 10)
 ):
@@ -145,8 +155,26 @@ def train_pca_knn_classifier(features, targets):
     return {"pca": pca, "model": knn, "n_components": n_components}
 
 
+def train_pca_random_forest_classifier(features, targets, requested_components=3):
+    n_components, pca = fit_pca_fixed_components(
+        features, requested_components=requested_components
+    )
+    reduced = pca.transform(features)
+    clf = RandomForestClassifier(
+        n_estimators=300, random_state=42, n_jobs=-1, class_weight="balanced"
+    )
+    clf.fit(reduced, targets)
+    return {"pca": pca, "model": clf, "n_components": n_components}
+
+
 def evaluate_classifier_random_forest(model, features, targets):
     predictions = model.predict(features)
+    return accuracy_score(targets, predictions)
+
+
+def evaluate_pca_random_forest_classifier(model_bundle, features, targets):
+    reduced = model_bundle["pca"].transform(features)
+    predictions = model_bundle["model"].predict(reduced)
     return accuracy_score(targets, predictions)
 
 
@@ -166,7 +194,7 @@ def main():
     parser.add_argument(
         "log_path",
         nargs="?",
-        default="C:/receipt.xes",
+        default="C:/roadtraffic_10000.xes.gz",
         help="Path to the XES log (default: tests/input_data/receipt.xes)",
     )
     parser.add_argument(
@@ -231,6 +259,12 @@ def main():
         )
         clf = train_classifier_random_forest(X_sampled, y_sampled)
         accuracy = evaluate_classifier_random_forest(clf, X_test, y_test)
+        pca_rf = train_pca_random_forest_classifier(
+            X_sampled, y_sampled, requested_components=3
+        )
+        pca_rf_accuracy = evaluate_pca_random_forest_classifier(
+            pca_rf, X_test, y_test
+        )
         pca_knn = train_pca_knn_classifier(X_sampled, y_sampled)
         pca_accuracy = evaluate_pca_knn_classifier(pca_knn, X_test, y_test)
         rf_metrics = compute_class_geometry_metrics(
@@ -242,7 +276,11 @@ def main():
         )
         print(f"Training sample %: {percentage}")
         print(f"Train size (sampled): {len(X_sampled)}")
-        print(f"RF test accuracy: {accuracy:.4f}")
+        print(f"RF (no PCA) test accuracy: {accuracy:.4f}")
+        print(
+            "PCA(3)+RF test accuracy: "
+            f"{pca_rf_accuracy:.4f} (components: {pca_rf['n_components']})"
+        )
         print(
             "RF intra_centroid_cos (mean): "
             f"{rf_metrics.get('intra_centroid_cos', float('nan')):.4f}"

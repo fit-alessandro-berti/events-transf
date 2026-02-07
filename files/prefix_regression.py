@@ -47,6 +47,16 @@ def fit_pca_with_variance_threshold(features, threshold=0.93):
     return n_components, pca
 
 
+def fit_pca_fixed_components(features, requested_components=3):
+    if not features:
+        raise ValueError("No features provided for PCA fitting.")
+    max_components = min(len(features), len(features[0]))
+    n_components = min(requested_components, max_components)
+    pca = PCA(n_components=n_components, random_state=42)
+    pca.fit(features)
+    return n_components, pca
+
+
 def sample_training_data(features, targets, percentage, rng):
     if percentage >= 100:
         return features, targets
@@ -69,6 +79,18 @@ def train_pca_knn_regressor(features, targets):
     n_components, pca = fit_pca_with_variance_threshold(features, threshold=0.93)
     reduced = pca.transform(features)
     reg = KNeighborsRegressor(n_neighbors=1)
+    reg.fit(reduced, targets)
+    return {"pca": pca, "model": reg, "n_components": n_components}
+
+
+def train_pca_random_forest_regressor(features, targets, requested_components=3):
+    n_components, pca = fit_pca_fixed_components(
+        features, requested_components=requested_components
+    )
+    reduced = pca.transform(features)
+    reg = RandomForestRegressor(
+        n_estimators=300, random_state=42, n_jobs=-1
+    )
     reg.fit(reduced, targets)
     return {"pca": pca, "model": reg, "n_components": n_components}
 
@@ -115,6 +137,12 @@ def evaluate_pca_knn_regressor(model_bundle, features, targets, case_ids):
     return compute_regression_metrics(targets, predictions, case_ids)
 
 
+def evaluate_pca_random_forest_regressor(model_bundle, features, targets, case_ids):
+    reduced = model_bundle["pca"].transform(features)
+    predictions = model_bundle["model"].predict(reduced)
+    return compute_regression_metrics(targets, predictions, case_ids)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=(
@@ -125,7 +153,7 @@ def main():
     parser.add_argument(
         "log_path",
         nargs="?",
-        default="C:/receipt.xes",
+        default="C:/roadtraffic_10000.xes.gz",
         help="Path to the XES log (default: tests/input_data/receipt.xes)",
     )
     parser.add_argument(
@@ -186,15 +214,28 @@ def main():
         )
         reg = train_regressor(X_sampled, y_sampled)
         metrics = evaluate_regressor(reg, X_test, y_test, case_test)
+        pca_rf = train_pca_random_forest_regressor(
+            X_sampled, y_sampled, requested_components=3
+        )
+        pca_rf_metrics = evaluate_pca_random_forest_regressor(
+            pca_rf, X_test, y_test, case_test
+        )
         pca_knn = train_pca_knn_regressor(X_sampled, y_sampled)
         pca_metrics = evaluate_pca_knn_regressor(
             pca_knn, X_test, y_test, case_test
         )
         print(f"Training sample %: {percentage}")
         print(f"Train size (sampled): {len(X_sampled)}")
-        print(f"Per-case MAE (hours): {metrics['mae_hours']:.4f}")
-        print(f"Per-case RMSE (hours): {metrics['rmse_hours']:.4f}")
-        print(f"R2: {metrics['r2']:.4f}")
+        print(f"RF (no PCA) Per-case MAE (hours): {metrics['mae_hours']:.4f}")
+        print(f"RF (no PCA) Per-case RMSE (hours): {metrics['rmse_hours']:.4f}")
+        print(f"RF (no PCA) R2: {metrics['r2']:.4f}")
+        print(
+            "PCA(3)+RF "
+            f"MAE (hours): {pca_rf_metrics['mae_hours']:.4f} "
+            f"RMSE (hours): {pca_rf_metrics['rmse_hours']:.4f} "
+            f"R2: {pca_rf_metrics['r2']:.4f} "
+            f"(components: {pca_rf['n_components']})"
+        )
         print(
             "PCA+kNN (k=1) "
             f"MAE (hours): {pca_metrics['mae_hours']:.4f} "

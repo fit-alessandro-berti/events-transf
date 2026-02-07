@@ -6,6 +6,7 @@ import warnings
 from sklearn .metrics import accuracy_score ,mean_absolute_error ,r2_score
 from sklearn .model_selection import train_test_split
 from sklearn .ensemble import RandomForestClassifier ,RandomForestRegressor
+from sklearn .decomposition import PCA
 from sklearn .ensemble import HistGradientBoostingRegressor
 from sklearn .linear_model import Ridge
 from sklearn .pipeline import Pipeline
@@ -137,11 +138,8 @@ def _report_inter_expert_metrics (expert_task_embeddings ,task_type :str ):
             f"  - Inter-expert metrics ({task_type }) {expert_a } vs {expert_b }: "
             f"mean_cos={mean_cos :.4f} | mean_l2={mean_l2 :.4f}"
             )
-def _build_classifiers (num_classes :int ):
-    models =[
-    (
-    "RandomForest",
-    RandomForestClassifier (
+def _make_rf_classifier ():
+    return RandomForestClassifier (
     n_estimators =800 ,
     random_state =42 ,
     n_jobs =-1 ,
@@ -150,9 +148,32 @@ def _build_classifiers (num_classes :int ):
     min_samples_leaf =5 ,
     min_samples_split =10 ,
     max_features ="sqrt"
-    ),
+    )
+def _make_rf_regressor ():
+    return RandomForestRegressor (
+    n_estimators =800 ,
+    random_state =42 ,
+    n_jobs =-1 ,
+    max_depth =10 ,
+    min_samples_leaf =6 ,
+    min_samples_split =10 ,
+    max_features =0.5
+    )
+def _build_classifiers (enable_pca_rf =False ):
+    models =[
+    (
+    "RandomForest",
+    _make_rf_classifier (),
     ),
     ]
+    if enable_pca_rf :
+        models .append ((
+        "PCA(3)+RandomForest",
+        Pipeline ([
+        ("pca",PCA (n_components =3 ,random_state =42 )),
+        ("model",_make_rf_classifier ())
+        ])
+        ))
     models .extend ([
     (
     "StandardScaler+LinearSVC",
@@ -169,21 +190,21 @@ def _build_classifiers (num_classes :int ):
     ),
     ])
     return models
-def _build_regressors ():
+def _build_regressors (enable_pca_rf =False ):
     models =[
     (
     "RandomForest",
-    RandomForestRegressor (
-    n_estimators =800 ,
-    random_state =42 ,
-    n_jobs =-1 ,
-    max_depth =10 ,
-    min_samples_leaf =6 ,
-    min_samples_split =10 ,
-    max_features =0.5
-    ),
+    _make_rf_regressor (),
     ),
     ]
+    if enable_pca_rf :
+        models .append ((
+        "PCA(3)+RandomForest",
+        Pipeline ([
+        ("pca",PCA (n_components =3 ,random_state =42 )),
+        ("model",_make_rf_regressor ())
+        ])
+        ))
     models .extend ([
     (
     "StandardScaler+Ridge",
@@ -280,8 +301,13 @@ train_percentage =100
         if np .unique (y_train ).size <2 :
             print (f"  - [{expert_name }] sklearn metrics skipped (classification): training set has one class.")
             return
-        num_classes =int (np .unique (y_train ).size )
-        for model_name ,clf in _build_classifiers (num_classes ):
+        can_use_pca3 =min (x_train .shape [0 ],x_train .shape [1 ])>=3
+        if not can_use_pca3 :
+            print (
+            f"  - [{expert_name }] PCA(3)+RandomForest skipped (classification): "
+            "need at least 3 samples and 3 features in train split."
+            )
+        for model_name ,clf in _build_classifiers (enable_pca_rf =can_use_pca3 ):
             try :
                 clf .fit (x_train ,y_train )
                 preds =clf .predict (x_test )
@@ -304,7 +330,13 @@ train_percentage =100
         if len (x_train )<2 :
             print (f"  - [{expert_name }] sklearn metrics skipped (regression): not enough training samples.")
             return
-        for model_name ,reg in _build_regressors ():
+        can_use_pca3 =min (x_train .shape [0 ],x_train .shape [1 ])>=3
+        if not can_use_pca3 :
+            print (
+            f"  - [{expert_name }] PCA(3)+RandomForest skipped (regression): "
+            "need at least 3 samples and 3 features in train split."
+            )
+        for model_name ,reg in _build_regressors (enable_pca_rf =can_use_pca3 ):
             try :
                 reg .fit (x_train ,y_train )
                 preds =reg .predict (x_test )
