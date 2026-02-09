@@ -238,6 +238,7 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
     batch_case_ids = np.array([t[2] for t in batch_tasks_raw], dtype=object)
 
     all_embeddings = model._process_batch(batch_prefixes)
+    z_ssl = model.proj_head(all_embeddings) if hasattr(model, "proj_head") else all_embeddings
     device = all_embeddings.device
 
     all_embeddings_norm = F.normalize(all_embeddings, p=2, dim=1)
@@ -269,18 +270,18 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
     if contrastive_w > 0:
         if task_type == "classification":
             contrastive_loss = _supcon_loss(
-                all_embeddings, labels_t, case_ids_int, temperature=contrastive_temp
+                z_ssl, labels_t, case_ids_int, temperature=contrastive_temp
             )
         else:
             y_t = torch.as_tensor(batch_labels, dtype=torch.float32, device=device)
             pos_k = int(config.get("retrieval_regression_pos_k", 2))
             contrastive_loss = _regression_neighbor_contrastive(
-                all_embeddings, y_t, case_ids_int, temperature=contrastive_temp, pos_k=pos_k
+                z_ssl, y_t, case_ids_int, temperature=contrastive_temp, pos_k=pos_k
             )
 
     if task_type == "classification" and knn_aux_w > 0 and labels_t is not None and case_ids_int is not None:
         nca_loss = _nca_knn_loss(
-            all_embeddings,
+            z_ssl,
             labels_t,
             case_ids_int,
             temperature=contrastive_temp,
@@ -444,9 +445,9 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
         with _autocast_disabled_for(device):
             reg = torch.tensor(0.0, device=device)
             if var_w > 0:
-                reg = reg + (var_w * _variance_loss(all_embeddings))
+                reg = reg + (var_w * _variance_loss(z_ssl))
             if cov_w > 0:
-                reg = reg + (cov_w * _covariance_loss(all_embeddings))
+                reg = reg + (cov_w * _covariance_loss(z_ssl))
         loss_out = loss_out + reg
 
     return loss_out, progress_bar_task

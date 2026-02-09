@@ -66,6 +66,12 @@ cleanup_checkpoints =False ):
     base_cov_weight =float (config .get ('retrieval_cov_weight',0.0 ))
     base_contrastive_weight =float (config .get ('retrieval_contrastive_weight',0.0 ))
     reg_ramp_epochs =max (1 ,int (config .get ('retrieval_reg_ramp_epochs',5 )))
+    k_start =int (config .get ('retrieval_k_start',12 ))
+    k_end =int (config .get ('retrieval_k_end',config .get ('retrieval_train_k',20 )))
+    k_ramp_epochs =max (1 ,int (config .get ('retrieval_k_ramp_epochs',8 )))
+    neg_rf_start =float (config .get ('retrieval_neg_random_frac_start',0.60 ))
+    neg_rf_end =float (config .get ('retrieval_neg_random_frac_end',0.15 ))
+    pos_nearest_epochs =max (0 ,int (config .get ('retrieval_pos_nearest_epochs',2 )))
     contrastive_ramp_cfg =config .get ('retrieval_contrastive_ramp',False )
     if isinstance (contrastive_ramp_cfg ,str ):
         contrastive_ramp =contrastive_ramp_cfg .strip ().lower ()in {'1','true','yes','y','on'}
@@ -90,6 +96,13 @@ cleanup_checkpoints =False ):
             config ['retrieval_cov_weight']=base_cov_weight *ramp
             if contrastive_ramp :
                 config ['retrieval_contrastive_weight']=base_contrastive_weight *ramp
+            k_ramp =min (1.0 ,float (epoch +1 )/float (k_ramp_epochs ))
+            k_curr =int (round (k_start +(k_end -k_start )*k_ramp ))
+            max_k_by_batch =max (1 ,int (config .get ('retrieval_train_batch_size',64 ))-1 )
+            config ['retrieval_train_k']=max (1 ,min (k_curr ,max_k_by_batch ))
+            neg_rf =neg_rf_start +(neg_rf_end -neg_rf_start )*k_ramp
+            config ['retrieval_neg_random_frac']=min (1.0 ,max (0.0 ,neg_rf ))
+            config ['retrieval_pos_use_nearest']=(epoch <pos_nearest_epochs )
         should_shuffle_labels =False
         if shuffle_strategy =='yes':
             should_shuffle_labels =True

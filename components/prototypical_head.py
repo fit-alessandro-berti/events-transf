@@ -7,6 +7,7 @@ class PrototypicalHead (nn .Module ):
     def __init__ (self ,init_logit_scale :float =5.0 ):
         super ().__init__ ()
         self .logit_scale =nn .Parameter (torch .tensor (float (init_logit_scale )))
+        self .logit_scale .requires_grad_(False )
         self .reg_logit_scale =nn .Parameter (torch .tensor (float (init_logit_scale )))
         self ._proto_shrink =nn .Parameter (torch .tensor (-2.0 ))
         self .count_prior =nn .Parameter (torch .tensor (0.0 ))
@@ -22,7 +23,7 @@ class PrototypicalHead (nn .Module ):
         query =_l2_normalize (query_features )
         support ,query =self ._center_and_renorm (support ,query )
         unique_classes ,inv =torch .unique (support_labels ,sorted =True ,return_inverse =True )
-        scale =self .logit_scale .clamp (1.0 ,100.0 )
+        scale =self .logit_scale .clamp (1.0 ,20.0 )
         if mode =="soft_knn":
             sims =(query @support .t ()) *scale
             attn =F .softmax (sims ,dim =1 )

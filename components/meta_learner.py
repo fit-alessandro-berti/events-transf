@@ -12,6 +12,12 @@ class MetaLearner (nn .Module ):
         self .strategy =strategy
         self .encoder =EventEncoder (d_model ,n_heads ,n_layers ,dropout )
         self .proto_head =PrototypicalHead ()
+        self .proj_head =nn .Sequential (
+        nn .Linear (d_model ,d_model ),
+        nn .GELU (),
+        nn .Linear (d_model ,128 ),
+        nn .LayerNorm (128 ),
+        )
         self .d_model =d_model
         if self .strategy =='pretrained':
             self .embedding_dim =kwargs ['embedding_dim']
