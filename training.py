@@ -12,12 +12,38 @@ from data_generator import XESLogLoader
 from training_strategies .episodic_strategy import run_episodic_step
 from training_strategies .retrieval_strategy import run_retrieval_step
 from training_strategies .train_utils import evaluate_embedding_quality
+def split_params_for_proto (model ):
+    base_params =[]
+    proto_params =[]
+    for name ,param in model .named_parameters ():
+        if not param .requires_grad :
+            continue
+        if ".proto_head."in name :
+            proto_params .append (param )
+        else :
+            base_params .append (param )
+    return base_params ,proto_params
 def train (model ,training_tasks ,loader ,config ,checkpoint_dir ,resume_epoch =0 ,stop_after_epoch =None ,
 cleanup_checkpoints =False ):
     print (f"🚀 Starting meta-training...")
     if resume_epoch >0 :
         print (f"--- Resuming from epoch {resume_epoch +1 } ---")
-    optimizer =optim .AdamW (model .parameters (),lr =config ['lr'])
+    base_params ,proto_params =split_params_for_proto (model )
+    optim_groups =[]
+    proto_group_idx =None
+    if base_params :
+        optim_groups .append ({"params":base_params ,"lr":config ['lr']})
+    elif proto_params :
+        optim_groups .append ({"params":proto_params ,"lr":config ['lr']})
+        proto_params =[]
+    if proto_params :
+        optim_groups .append ({"params":proto_params ,"lr":config ['lr']})
+        proto_group_idx =len (optim_groups )-1
+    optimizer =optim .AdamW (
+    optim_groups ,
+    lr =config ['lr'],
+    weight_decay =float (config .get ('weight_decay',0.01 ))
+    )
     scheduler =CosineAnnealingLR (optimizer ,T_max =config ['epochs'],eta_min =1e-6 )
     if resume_epoch >0 :
         scheduler .last_epoch =resume_epoch
@@ -34,6 +60,17 @@ cleanup_checkpoints =False ):
     if training_strategy in ['retrieval','mixed']:
         print (f"  - Retrieval k (train): {config .get ('retrieval_train_k',5 )}")
         print (f"  - Retrieval batch size (train): {config .get ('retrieval_train_batch_size',64 )}")
+    proto_warmup_epochs =int (config .get ('proto_head_warmup_epochs',2 ))
+    proto_lr_mult_after =float (config .get ('proto_head_lr_mult_after_warmup',0.1 ))
+    base_var_weight =float (config .get ('retrieval_var_weight',0.0 ))
+    base_cov_weight =float (config .get ('retrieval_cov_weight',0.0 ))
+    base_contrastive_weight =float (config .get ('retrieval_contrastive_weight',0.0 ))
+    reg_ramp_epochs =max (1 ,int (config .get ('retrieval_reg_ramp_epochs',5 )))
+    contrastive_ramp_cfg =config .get ('retrieval_contrastive_ramp',False )
+    if isinstance (contrastive_ramp_cfg ,str ):
+        contrastive_ramp =contrastive_ramp_cfg .strip ().lower ()in {'1','true','yes','y','on'}
+    else :
+        contrastive_ramp =bool (contrastive_ramp_cfg )
     shuffle_strategy =str (config .get ('episodic_label_shuffle','no')).lower ()
     print (f"✅ Episodic Label Shuffle strategy set to: '{shuffle_strategy }'")
     num_experts =model .num_experts
@@ -43,6 +80,16 @@ cleanup_checkpoints =False ):
     for epoch in range (resume_epoch ,config ['epochs']):
         model .train ()
         total_loss =0.0
+        base_lr =optimizer .param_groups [0 ]['lr']
+        if proto_group_idx is not None :
+            proto_mult =1.0 if epoch <proto_warmup_epochs else proto_lr_mult_after
+            optimizer .param_groups [proto_group_idx ]['lr']=base_lr *proto_mult
+        if training_strategy in ['retrieval','mixed']:
+            ramp =min (1.0 ,float (epoch +1 )/float (reg_ramp_epochs ))
+            config ['retrieval_var_weight']=base_var_weight *ramp
+            config ['retrieval_cov_weight']=base_cov_weight *ramp
+            if contrastive_ramp :
+                config ['retrieval_contrastive_weight']=base_contrastive_weight *ramp
         should_shuffle_labels =False
         if shuffle_strategy =='yes':
             should_shuffle_labels =True
@@ -99,7 +146,11 @@ cleanup_checkpoints =False ):
             progress_bar .set_postfix (progress_bar_postfix )
         avg_loss =total_loss /config ['episodes_per_epoch']if config ['episodes_per_epoch']>0 else 0
         current_lr =optimizer .param_groups [0 ]['lr']
-        print (f"\nEpoch {epoch +1 } finished. Average Loss: {avg_loss :.4f} | Current LR: {current_lr :.6f}")
+        if proto_group_idx is not None :
+            proto_lr =optimizer .param_groups [proto_group_idx ]['lr']
+            print (f"\nEpoch {epoch +1 } finished. Average Loss: {avg_loss :.4f} | Base LR: {current_lr :.6f} | Proto LR: {proto_lr :.6f}")
+        else :
+            print (f"\nEpoch {epoch +1 } finished. Average Loss: {avg_loss :.4f} | Current LR: {current_lr :.6f}")
         evaluate_embedding_quality (model .experts [0 ],loader )
         scheduler .step ()
         checkpoint_path =os .path .join (checkpoint_dir ,f"model_epoch_{epoch +1 }.pth")

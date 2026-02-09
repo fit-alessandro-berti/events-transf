@@ -163,6 +163,38 @@ def _regression_neighbor_contrastive(
         return torch.stack(losses).mean()
 
 
+def _nca_knn_loss(
+    z: torch.Tensor,
+    labels: torch.Tensor,
+    case_ids_int: torch.Tensor,
+    temperature: float = 0.07,
+):
+    """Supervised NCA-style objective: maximize same-label probability mass."""
+    device = z.device
+    temp = max(float(temperature), 1e-6)
+
+    with _autocast_disabled_for(device):
+        z = F.normalize(z.float(), p=2, dim=1)
+        batch_size = z.size(0)
+        logits = (z @ z.t()) / temp
+
+        self_mask = torch.eye(batch_size, device=device, dtype=torch.bool)
+        same_case = case_ids_int.view(-1, 1).eq(case_ids_int.view(1, -1))
+        ignore = self_mask | same_case
+        logits = logits.masked_fill(ignore, -1e4)
+
+        log_prob = F.log_softmax(logits, dim=1)
+        labels = labels.view(-1, 1)
+        pos_mask = labels.eq(labels.t()) & (~ignore)
+        pos_counts = pos_mask.sum(dim=1)
+        valid = pos_counts > 0
+        if not valid.any():
+            return None
+
+        log_p_pos = torch.logsumexp(log_prob.masked_fill(~pos_mask, -1e4), dim=1)
+        return (-log_p_pos[valid]).mean()
+
+
 def _variance_loss(z: torch.Tensor, eps: float = 1e-4, target_std: float = 1.0):
     z = z.float()
     z = z - z.mean(dim=0, keepdim=True)
@@ -211,15 +243,31 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
     all_embeddings_norm = F.normalize(all_embeddings, p=2, dim=1)
     all_embeddings_norm_detached = all_embeddings_norm.detach()
     cls_pos_k_cfg = int(config.get("retrieval_cls_pos_k", 2))
+    neg_pool_factor = max(1, int(config.get("retrieval_neg_pool_factor", 4)))
+    neg_random_frac = float(config.get("retrieval_neg_random_frac", 0.25))
+    neg_random_frac = min(max(neg_random_frac, 0.0), 1.0)
+    pos_use_nearest_cfg = config.get("retrieval_pos_use_nearest", True)
+    if isinstance(pos_use_nearest_cfg, str):
+        pos_use_nearest = pos_use_nearest_cfg.strip().lower() in {"1", "true", "yes", "y", "on"}
+    else:
+        pos_use_nearest = bool(pos_use_nearest_cfg)
 
     contrastive_w = float(config.get("retrieval_contrastive_weight", 0.2))
     contrastive_temp = float(config.get("retrieval_contrastive_temp", 0.07))
+    knn_aux_w = float(config.get("retrieval_knn_aux_weight", 0.0))
     contrastive_loss = None
+    nca_loss = None
+    labels_t = None
+    case_ids_int = None
+
+    if contrastive_w > 0 or (task_type == "classification" and knn_aux_w > 0):
+        case_ids_int = _encode_case_ids_to_int(batch_case_ids).to(device)
+
+    if task_type == "classification":
+        labels_t = torch.as_tensor(batch_labels, dtype=torch.long, device=device)
 
     if contrastive_w > 0:
-        case_ids_int = _encode_case_ids_to_int(batch_case_ids).to(device)
         if task_type == "classification":
-            labels_t = torch.as_tensor(batch_labels, dtype=torch.long, device=device)
             contrastive_loss = _supcon_loss(
                 all_embeddings, labels_t, case_ids_int, temperature=contrastive_temp
             )
@@ -229,6 +277,14 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
             contrastive_loss = _regression_neighbor_contrastive(
                 all_embeddings, y_t, case_ids_int, temperature=contrastive_temp, pos_k=pos_k
             )
+
+    if task_type == "classification" and knn_aux_w > 0 and labels_t is not None and case_ids_int is not None:
+        nca_loss = _nca_knn_loss(
+            all_embeddings,
+            labels_t,
+            case_ids_int,
+            temperature=contrastive_temp,
+        )
 
     total_loss_for_batch = 0.0
     queries_processed = 0
@@ -252,9 +308,18 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
             if positive_indices.size == 0:
                 continue
 
+            with torch.no_grad():
+                sims = (query_embedding_norm @ all_embeddings_norm_detached.t()).squeeze(0)
+
             pos_k = min(cls_pos_k_cfg, int(positive_indices.size), max(1, retrieval_k_train - 1))
-            chosen_pos_idx = np.random.choice(positive_indices, size=pos_k, replace=False)
-            pos_tensor = torch.from_numpy(chosen_pos_idx).to(device)
+            if pos_use_nearest:
+                pos_candidates = torch.from_numpy(positive_indices).to(device)
+                pos_sims = sims[pos_candidates]
+                pos_rel = torch.topk(pos_sims, k=pos_k, largest=True).indices
+                pos_tensor = pos_candidates[pos_rel]
+            else:
+                chosen_pos_idx = np.random.choice(positive_indices, size=pos_k, replace=False)
+                pos_tensor = torch.from_numpy(chosen_pos_idx).to(device)
 
             neg_k = retrieval_k_train - pos_k
             if neg_k <= 0:
@@ -264,20 +329,55 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
                 neg_mask = (batch_case_ids == query_case_id) | (batch_labels == query_label)
                 neg_mask_idx = torch.from_numpy(np.where(neg_mask)[0]).to(device)
 
-            neg_indices = find_knn_indices(
+            neg_available_np = np.where(~neg_mask)[0]
+            if neg_available_np.size == 0:
+                continue
+
+            hard_pool_k = min(int(neg_available_np.size), max(neg_k, neg_k * neg_pool_factor))
+            hard_pool = find_knn_indices(
                 query_embedding_norm,
                 all_embeddings_norm_detached,
-                k=neg_k,
+                k=hard_pool_k,
                 indices_to_mask=neg_mask_idx,
             )
 
-            if neg_indices.numel() < neg_k:
-                avail = np.where(~neg_mask)[0]
-                if avail.size == 0:
-                    continue
-                need = neg_k - int(neg_indices.numel())
-                fill = np.random.choice(avail, size=min(need, avail.size), replace=False)
-                neg_indices = torch.cat([neg_indices, torch.from_numpy(fill).to(device)])
+            rand_k = int(round(neg_k * neg_random_frac))
+            if neg_k > 1:
+                rand_k = min(rand_k, neg_k - 1)
+            else:
+                rand_k = 0
+            hard_k = neg_k - rand_k
+
+            hard_pool_np = hard_pool.detach().cpu().numpy() if hard_pool.numel() > 0 else np.array([], dtype=np.int64)
+            if hard_pool_np.size < hard_k:
+                hard_k = int(hard_pool_np.size)
+                rand_k = neg_k - hard_k
+
+            if hard_k > 0:
+                hard_sel_np = np.random.choice(hard_pool_np, size=hard_k, replace=False)
+            else:
+                hard_sel_np = np.array([], dtype=np.int64)
+
+            remaining_for_random = np.setdiff1d(neg_available_np, hard_sel_np, assume_unique=False)
+            rand_k_eff = min(rand_k, int(remaining_for_random.size))
+            if rand_k_eff > 0:
+                rand_sel_np = np.random.choice(remaining_for_random, size=rand_k_eff, replace=False)
+            else:
+                rand_sel_np = np.array([], dtype=np.int64)
+
+            neg_sel_np = np.concatenate([hard_sel_np, rand_sel_np]).astype(np.int64, copy=False)
+            if neg_sel_np.size < neg_k:
+                remaining_fill = np.setdiff1d(neg_available_np, neg_sel_np, assume_unique=False)
+                need = neg_k - int(neg_sel_np.size)
+                fill_k = min(need, int(remaining_fill.size))
+                if fill_k > 0:
+                    fill_np = np.random.choice(remaining_fill, size=fill_k, replace=False)
+                    neg_sel_np = np.concatenate([neg_sel_np, fill_np]).astype(np.int64, copy=False)
+
+            if neg_sel_np.size == 0:
+                continue
+
+            neg_indices = torch.from_numpy(neg_sel_np).to(device)
 
             support_indices = torch.cat([pos_tensor, neg_indices])[:retrieval_k_train]
 
@@ -331,6 +431,12 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
             loss_out = loss_out + (contrastive_w * contrastive_loss)
     elif contrastive_loss is not None:
         loss_out = contrastive_w * contrastive_loss
+
+    if nca_loss is not None and knn_aux_w > 0:
+        if loss_out is None:
+            loss_out = knn_aux_w * nca_loss
+        else:
+            loss_out = loss_out + (knn_aux_w * nca_loss)
 
     var_w = float(config.get("retrieval_var_weight", 0.0))
     cov_w = float(config.get("retrieval_cov_weight", 0.0))
