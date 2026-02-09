@@ -177,7 +177,7 @@ if __name__ =='__main__':
             cls_support_labels =all_cls_labels [support_indices ]
             with torch .no_grad ():
                 logits ,proto_classes ,_ =proto_head_to_use .forward_classification (
-                cls_support_embeddings ,cls_support_labels ,query_embedding_norm
+                cls_support_embeddings ,cls_support_labels ,query_embedding_norm ,mode ="soft_knn"
                 )
             pred_label_idx =torch .argmax (logits ,dim =1 ).item ()
             predicted_activity_id =proto_classes [pred_label_idx ].item ()

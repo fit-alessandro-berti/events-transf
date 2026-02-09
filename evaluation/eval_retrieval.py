@@ -592,7 +592,7 @@ first_expert_only =False
                         with torch .no_grad ():
                             if task_type =='classification':
                                 logits ,proto_classes ,confidence =expert .proto_head .forward_classification (
-                                support_embeddings ,support_labels ,query_embedding
+                                support_embeddings ,support_labels ,query_embedding ,mode ="soft_knn"
                                 )
                                 if logits is None :
                                     continue

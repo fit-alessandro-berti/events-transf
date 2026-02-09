@@ -386,7 +386,7 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
             support_labels_tensor = torch.as_tensor(support_labels_list, dtype=torch.long, device=device)
 
             logits, proto_classes, _ = model.proto_head.forward_classification(
-                support_embeddings, support_labels_tensor, query_embedding
+                support_embeddings, support_labels_tensor, query_embedding, mode="soft_knn"
             )
             if logits is None:
                 continue

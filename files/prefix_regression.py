@@ -184,7 +184,7 @@ def main():
     parser.add_argument(
         "log_path",
         nargs="?",
-        default="C:/roadtraffic_10000.xes.gz",
+        default="C:/receipt.xes",
         help="Path to the XES log (default: tests/input_data/receipt.xes)",
     )
     parser.add_argument(
