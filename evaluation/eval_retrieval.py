@@ -442,10 +442,11 @@ eval_scope ="experts"
     if first_expert_only and scope =="model" and len (all_experts )>1 :
         print ("  - Retrieval-augmented: eval_scope='model' ignores first_expert_only and uses all experts.")
 
+    experts_for_embedding =all_experts if scope =="model" else experts_for_eval
     expert_task_embeddings ={}
     if num_experts >1 :
         print (f"  - (MoE) Retrieval evaluation scope: {scope }")
-    for expert_name ,expert in all_experts :
+    for expert_name ,expert in experts_for_embedding :
         expert_task_embeddings [expert_name ]={}
         for task_type ,task_data in test_tasks .items ():
             if not task_data :
@@ -460,7 +461,7 @@ eval_scope ="experts"
             case_ids ,
             embeddings_raw
             )
-            if scope =="experts" and expert_name in {name for name ,_ in experts_for_eval }:
+            if scope =="experts":
                 try :
                     has_nan =torch .isnan (embeddings_raw ).any ().item ()
                     all_finite =torch .isfinite (embeddings_raw ).all ().item ()
