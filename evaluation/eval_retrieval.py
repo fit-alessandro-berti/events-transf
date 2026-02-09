@@ -416,76 +416,127 @@ num_retrieval_k_list ,
 num_test_queries =200 ,
 candidate_percentages =None ,
 sklearn_train_percentage =100 ,
-first_expert_only =False
+first_expert_only =False ,
+eval_scope ="experts"
 ):
     print ("\n🔬 Starting Retrieval-Augmented Evaluation...")
     model .eval ()
     if not candidate_percentages :
         candidate_percentages =[100 ]
+    scope =str (eval_scope or "experts").strip ().lower ()
+    if scope not in {"experts","model"}:
+        print (f"  - Unknown eval_scope '{eval_scope }', falling back to 'experts'.")
+        scope ="experts"
+
     if hasattr (model ,"experts"):
         num_experts =len (model .experts )
+        all_experts =[(f"Expert {i }",model .experts [i ])for i in range (num_experts )]
     else :
         num_experts =1
-    if num_experts >1 :
-        experts_to_eval =[(f"Expert {i }",model .experts [i ])for i in range (num_experts )]
-        print (f"  - (MoE) Running k-NN eval for all {num_experts } experts.")
-    else :
-        experts_to_eval =[("Expert 0",model )]
-    if first_expert_only and len (experts_to_eval )>1 :
-        experts_to_eval =experts_to_eval [:1 ]
+        all_experts =[("Model",model )]
+
+    experts_for_eval =all_experts
+    if first_expert_only and scope =="experts" and len (experts_for_eval )>1 :
+        experts_for_eval =experts_for_eval [:1 ]
         print ("  - Retrieval-augmented: limiting to first expert only.")
+    if first_expert_only and scope =="model" and len (all_experts )>1 :
+        print ("  - Retrieval-augmented: eval_scope='model' ignores first_expert_only and uses all experts.")
+
     expert_task_embeddings ={}
-    for expert_name ,expert in experts_to_eval :
+    if num_experts >1 :
+        print (f"  - (MoE) Retrieval evaluation scope: {scope }")
+    for expert_name ,expert in all_experts :
         expert_task_embeddings [expert_name ]={}
         for task_type ,task_data in test_tasks .items ():
             if not task_data :
-                print (f"Skipping {task_type }: No test data available.")
                 continue
             embeddings_raw ,labels ,case_ids =_get_all_test_embeddings (expert ,task_data )
             if embeddings_raw is None :
                 return
-            try :
-                has_nan =torch .isnan (embeddings_raw ).any ().item ()
-                all_finite =torch .isfinite (embeddings_raw ).all ().item ()
-                print (f"  - [{expert_name }] Embedding sanity: has_nan={has_nan }, all_finite={all_finite }")
-            except Exception as e :
-                print (f"  - [{expert_name }] Embedding sanity check failed: {e }")
-            if case_ids is not None :
-                unique_cases ,case_counts =np .unique (case_ids ,return_counts =True )
-                print (f"  - [{expert_name }] Case ID stats: unique_cases={len (unique_cases )}, total_tasks={len (case_ids )}")
-                if len (unique_cases )>0 :
-                    top_k =min (5 ,len (unique_cases ))
-                    top_idx =np .argsort (case_counts )[-top_k :][::-1 ]
-                    top_cases =[(unique_cases [i ],int (case_counts [i ]))for i in top_idx ]
-                    print (f"  - [{expert_name }] Top case_id counts: {top_cases }")
             embeddings_norm =F .normalize (embeddings_raw ,p =2 ,dim =1 )
-            if task_type =='classification':
-                _report_similarity_metrics (embeddings_norm ,labels ,label =expert_name )
             expert_task_embeddings [expert_name ][task_type ]=(
             embeddings_norm ,
             labels ,
             case_ids ,
             embeddings_raw
             )
-            print (f"  - [{expert_name }] Pre-computed {embeddings_norm .shape [0 ]} embeddings for {task_type }.")
+            if scope =="experts" and expert_name in {name for name ,_ in experts_for_eval }:
+                try :
+                    has_nan =torch .isnan (embeddings_raw ).any ().item ()
+                    all_finite =torch .isfinite (embeddings_raw ).all ().item ()
+                    print (f"  - [{expert_name }] Embedding sanity: has_nan={has_nan }, all_finite={all_finite }")
+                except Exception as e :
+                    print (f"  - [{expert_name }] Embedding sanity check failed: {e }")
+                if case_ids is not None :
+                    unique_cases ,case_counts =np .unique (case_ids ,return_counts =True )
+                    print (f"  - [{expert_name }] Case ID stats: unique_cases={len (unique_cases )}, total_tasks={len (case_ids )}")
+                    if len (unique_cases )>0 :
+                        top_k =min (5 ,len (unique_cases ))
+                        top_idx =np .argsort (case_counts )[-top_k :][::-1 ]
+                        top_cases =[(unique_cases [i ],int (case_counts [i ]))for i in top_idx ]
+                        print (f"  - [{expert_name }] Top case_id counts: {top_cases }")
+                if task_type =='classification':
+                    _report_similarity_metrics (embeddings_norm ,labels ,label =expert_name )
+                print (f"  - [{expert_name }] Pre-computed {embeddings_norm .shape [0 ]} embeddings for {task_type }.")
+
+    model_task_embeddings ={}
+    if scope =="model":
+        for task_type ,task_data in test_tasks .items ():
+            if not task_data :
+                print (f"Skipping {task_type }: No test data available.")
+                continue
+            embeddings_raw ,labels ,case_ids =_get_all_test_embeddings (model ,task_data )
+            if embeddings_raw is None :
+                return
+            embeddings_norm =F .normalize (embeddings_raw ,p =2 ,dim =1 )
+            model_task_embeddings [task_type ]=(embeddings_norm ,labels ,case_ids ,embeddings_raw )
+            try :
+                has_nan =torch .isnan (embeddings_raw ).any ().item ()
+                all_finite =torch .isfinite (embeddings_raw ).all ().item ()
+                print (f"  - [Model] Embedding sanity: has_nan={has_nan }, all_finite={all_finite }")
+            except Exception as e :
+                print (f"  - [Model] Embedding sanity check failed: {e }")
+            if case_ids is not None :
+                unique_cases ,case_counts =np .unique (case_ids ,return_counts =True )
+                print (f"  - [Model] Case ID stats: unique_cases={len (unique_cases )}, total_tasks={len (case_ids )}")
+                if len (unique_cases )>0 :
+                    top_k =min (5 ,len (unique_cases ))
+                    top_idx =np .argsort (case_counts )[-top_k :][::-1 ]
+                    top_cases =[(unique_cases [i ],int (case_counts [i ]))for i in top_idx ]
+                    print (f"  - [Model] Top case_id counts: {top_cases }")
+            if task_type =='classification':
+                _report_similarity_metrics (embeddings_norm ,labels ,label ="Model" )
+            print (f"  - [Model] Pre-computed {embeddings_norm .shape [0 ]} embeddings for {task_type }.")
+    else :
+        for task_type in test_tasks .keys ():
+            _report_inter_expert_metrics (expert_task_embeddings ,task_type )
+
     for task_type in test_tasks .keys ():
-        _report_inter_expert_metrics (expert_task_embeddings ,task_type )
-    for task_type in test_tasks .keys ():
-        available_experts =[]
-        for expert_name ,expert in experts_to_eval :
-            if task_type in expert_task_embeddings .get (expert_name ,{}):
-                embeddings_norm ,labels ,case_ids ,embeddings_raw =expert_task_embeddings [expert_name ][task_type ]
-                available_experts .append ((
-                expert_name ,
-                expert ,
-                embeddings_norm ,
-                labels ,
-                case_ids ,
-                embeddings_raw
-                ))
-        if not available_experts :
+        if scope =="model":
+            if task_type not in model_task_embeddings :
+                continue
+            eval_units =[("Model",model ,*model_task_embeddings [task_type ])]
+            experts_for_agg =[]
+            for expert_name ,expert in all_experts :
+                data =expert_task_embeddings .get (expert_name ,{}).get (task_type )
+                if data is None :
+                    continue
+                experts_for_agg .append ((expert_name ,expert ,*data ))
+        else :
+            eval_units =[]
+            experts_for_agg =[]
+            for expert_name ,expert in experts_for_eval :
+                data =expert_task_embeddings .get (expert_name ,{}).get (task_type )
+                if data is None :
+                    continue
+                eval_units .append ((expert_name ,expert ,*data ))
+            if not eval_units :
+                continue
+
+        if not eval_units :
             continue
-        base_num_samples =available_experts [0 ][2 ].shape [0 ]
+
+        base_num_samples =eval_units [0 ][2 ].shape [0 ]
         if base_num_samples <2 :
             print (f"Skipping {task_type }: Not enough samples to evaluate.")
             continue
@@ -511,30 +562,31 @@ first_expert_only =False
                     mask_np =np .ones (base_num_samples ,dtype =bool )
                     mask_np [candidate_pool_indices ]=False
                     candidate_pool_masks [pct ]=np .where (mask_np )[0 ]
-        for expert_name ,expert ,all_embeddings_norm ,all_labels ,all_case_ids ,all_embeddings_raw in available_experts :
-            print (f"\n--- Evaluating task: {task_type } | {expert_name } ---")
+
+        for unit_name ,unit_model ,all_embeddings_norm ,all_labels ,all_case_ids ,_ in eval_units :
+            print (f"\n--- Evaluating task: {task_type } | {unit_name } ---")
             num_total_samples =all_embeddings_norm .shape [0 ]
             if num_total_samples <2 :
-                print (f"Skipping {task_type } | {expert_name }: Not enough samples to evaluate.")
+                print (f"Skipping {task_type } | {unit_name }: Not enough samples to evaluate.")
                 continue
             if num_total_samples !=base_num_samples :
                 print (
-                f"  - Warning: {expert_name } has {num_total_samples } samples; "
-                f"expected {base_num_samples }. Re-sampling queries for this expert."
+                f"  - Warning: {unit_name } has {num_total_samples } samples; "
+                f"expected {base_num_samples }. Re-sampling queries for this unit."
                 )
                 num_queries =min (num_test_queries ,num_total_samples )
                 query_indices =random .sample (range (num_total_samples ),num_queries )
-                expert_candidate_pool_masks ={}
+                unit_candidate_pool_masks ={}
                 for pct in candidate_percentages :
                     if pct >=100 :
-                        expert_candidate_pool_masks [pct ]=None
+                        unit_candidate_pool_masks [pct ]=None
                     elif pct <=0 :
-                        expert_candidate_pool_masks [pct ]=np .arange (num_total_samples )
+                        unit_candidate_pool_masks [pct ]=np .arange (num_total_samples )
                     else :
                         sample_size =int (np .ceil (num_total_samples *(pct /100.0 )))
                         sample_size =max (1 ,min (sample_size ,num_total_samples ))
                         if sample_size ==num_total_samples :
-                            expert_candidate_pool_masks [pct ]=None
+                            unit_candidate_pool_masks [pct ]=None
                         else :
                             candidate_pool_indices =np .random .choice (
                             num_total_samples ,
@@ -543,24 +595,24 @@ first_expert_only =False
                             )
                             mask_np =np .ones (num_total_samples ,dtype =bool )
                             mask_np [candidate_pool_indices ]=False
-                            expert_candidate_pool_masks [pct ]=np .where (mask_np )[0 ]
+                            unit_candidate_pool_masks [pct ]=np .where (mask_np )[0 ]
             else :
                 query_indices =base_query_indices
-                expert_candidate_pool_masks =candidate_pool_masks
+                unit_candidate_pool_masks =candidate_pool_masks
+
             for pct in candidate_percentages :
                 print (f"\n  - Candidate pool sampling: {pct }%")
-                non_candidate_indices_np =expert_candidate_pool_masks .get (pct )
+                non_candidate_indices_np =unit_candidate_pool_masks .get (pct )
                 if non_candidate_indices_np is None :
                     non_candidate_indices_tensor =None
                 else :
-                    non_candidate_indices_tensor =torch .from_numpy (non_candidate_indices_np ).to (
-                    all_embeddings_norm .device
-                    )
+                    non_candidate_indices_tensor =torch .from_numpy (non_candidate_indices_np ).to (all_embeddings_norm .device )
                 if non_candidate_indices_tensor is not None :
                     print (f"  - Candidate pool size: {num_total_samples -len (non_candidate_indices_np )} / {num_total_samples }")
+
                 for k in num_retrieval_k_list :
                     if k >=num_total_samples :
-                        print (f"Skipping [{expert_name } | k={k } | pct={pct }%]: k is larger than total samples.")
+                        print (f"Skipping [{unit_name } | k={k } | pct={pct }%]: k is larger than total samples.")
                         continue
                     all_preds ,all_true_labels ,all_confidences =[],[],[]
                     for query_idx in query_indices :
@@ -587,11 +639,57 @@ first_expert_only =False
                         )
                         if top_k_indices .numel ()==0 :
                             continue
+
+                        if scope =="model" and len (experts_for_agg )>=1 :
+                            expert_outputs =[]
+                            proto_classes_ref =None
+                            query_label_tensor =torch .as_tensor ([query_label .item ()],device =query_embedding .device )
+                            for _expert_name ,expert_model ,expert_embeddings_norm ,expert_labels ,_expert_case_ids ,_expert_embeddings_raw in experts_for_agg :
+                                if expert_embeddings_norm .shape [0 ]!=num_total_samples :
+                                    continue
+                                expert_query_embedding =expert_embeddings_norm [query_idx :query_idx +1 ]
+                                expert_support_embeddings =expert_embeddings_norm [top_k_indices ]
+                                expert_support_labels =expert_labels [top_k_indices ]
+                                with torch .no_grad ():
+                                    if task_type =='classification':
+                                        logits ,proto_classes ,confidence =expert_model .proto_head .forward_classification (
+                                        expert_support_embeddings ,expert_support_labels ,expert_query_embedding ,mode ="soft_knn"
+                                        )
+                                        if logits is None :
+                                            continue
+                                        if proto_classes_ref is None :
+                                            proto_classes_ref =proto_classes
+                                        expert_outputs .append ((logits ,query_label_tensor ,confidence ))
+                                    else :
+                                        prediction ,confidence =expert_model .proto_head .forward_regression (
+                                        expert_support_embeddings ,expert_support_labels .float (),expert_query_embedding
+                                        )
+                                        expert_outputs .append ((prediction .view (-1 ),query_label_tensor .float (),confidence .view (-1 )))
+                            if not expert_outputs :
+                                continue
+                            final_preds ,_ ,final_conf =model ._aggregate_outputs (expert_outputs ,task_type ,query_label_tensor )
+                            if task_type =='classification':
+                                pred_label_idx =torch .argmax (final_preds ,dim =1 ).item ()
+                                pred_confidence =float (final_conf [0 ].item ()) if isinstance (final_conf ,torch .Tensor )else float (final_conf )
+                                if proto_classes_ref is None :
+                                    continue
+                                predicted_class_label =proto_classes_ref [pred_label_idx ].item ()
+                                all_preds .append (predicted_class_label )
+                                all_true_labels .append (query_label .item ())
+                                all_confidences .append (pred_confidence )
+                            else :
+                                pred_value =float (final_preds [0 ].item ()) if isinstance (final_preds ,torch .Tensor )else float (final_preds )
+                                pred_confidence =float (final_conf [0 ].item ()) if isinstance (final_conf ,torch .Tensor )else float (final_conf )
+                                all_preds .append (pred_value )
+                                all_true_labels .append (query_label .item ())
+                                all_confidences .append (pred_confidence )
+                            continue
+
                         support_embeddings =all_embeddings_norm [top_k_indices ]
                         support_labels =all_labels [top_k_indices ]
                         with torch .no_grad ():
                             if task_type =='classification':
-                                logits ,proto_classes ,confidence =expert .proto_head .forward_classification (
+                                logits ,proto_classes ,confidence =unit_model .proto_head .forward_classification (
                                 support_embeddings ,support_labels ,query_embedding ,mode ="soft_knn"
                                 )
                                 if logits is None :
@@ -603,19 +701,20 @@ first_expert_only =False
                                 all_true_labels .append (query_label .item ())
                                 all_confidences .append (pred_confidence )
                             else :
-                                prediction ,confidence =expert .proto_head .forward_regression (
+                                prediction ,confidence =unit_model .proto_head .forward_regression (
                                 support_embeddings ,support_labels .float (),query_embedding
                                 )
                                 all_preds .append (prediction [0 ].item ())
                                 all_true_labels .append (query_label .item ())
                                 all_confidences .append (confidence [0 ].item ())
+
                     if not all_true_labels :
-                        print (f"Skipping [{expert_name } | k={k } | pct={pct }%]: no valid queries.")
+                        print (f"Skipping [{unit_name } | k={k } | pct={pct }%]: no valid queries.")
                         continue
                     if task_type =='classification':
                         avg_conf =np .mean (all_confidences )
                         print (
-                        f"[{expert_name } | {k }-NN | pct={pct }%] "
+                        f"[{unit_name } | {k }-NN | pct={pct }%] "
                         f"Retrieval Accuracy: {accuracy_score (all_true_labels ,all_preds ):.4f} | "
                         f"Avg. Confidence: {avg_conf :.4f} (on {len (all_true_labels )} queries)"
                         )
@@ -626,16 +725,8 @@ first_expert_only =False
                         preds =_to_hours (preds_np )
                         labels =_to_hours (labels_np )
                         print (
-                        f"[{expert_name } | {k }-NN | pct={pct }%] "
+                        f"[{unit_name } | {k }-NN | pct={pct }%] "
                         f"Retrieval MAE: {mean_absolute_error (labels ,preds ):.4f} | "
                         f"R-squared: {r2_score (labels ,preds ):.4f} | "
                         f"Avg. Confidence: {avg_conf :.4f}"
                         )
-                _report_sklearn_metrics (
-                f"{expert_name } | pct={pct }%",
-                task_type ,
-                all_embeddings_raw ,
-                all_labels ,
-                all_case_ids ,
-                train_percentage =pct
-                )

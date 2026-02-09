@@ -9,7 +9,7 @@ from config import CONFIG
 from time_transf import inverse_transform_time
 from utils .data_utils import get_task_data
 from utils .model_utils import init_loader ,create_model ,load_model_weights
-from evaluation import evaluate_model ,evaluate_retrieval_augmented ,evaluate_sklearn_baselines ,evaluate_pca_knn
+from evaluation import evaluate_model ,evaluate_retrieval_augmented ,evaluate_pca_knn
 if __name__ =='__main__':
     parser =argparse .ArgumentParser (description ="Run the meta-learning model evaluation script.")
     default_config =CONFIG
@@ -21,6 +21,13 @@ if __name__ =='__main__':
     parser .add_argument ('--test_retrieval_k',type =int ,nargs ='+',default =default_config ['test_retrieval_k'],help =f"List of k-values for retrieval-augmented mode. (default: {default_config ['test_retrieval_k']})")
     parser .add_argument ('--test_retrieval_candidate_percentages',type =float ,nargs ='+',default =default_config .get ('test_retrieval_candidate_percentages',[100 ]),help ="List of candidate-pool sampling percentages for retrieval-augmented mode.")
     parser .add_argument (
+    '--test_retrieval_eval_scope',
+    type =str ,
+    default =default_config .get ('test_retrieval_eval_scope','experts'),
+    choices =['experts','model'],
+    help ="Evaluate retrieval candidate pools per expert or for whole model."
+    )
+    parser .add_argument (
     '--test_retrieval_first_expert_only',
     action ='store_true',
     default =default_config .get ('test_retrieval_first_expert_only',False ),
@@ -31,6 +38,7 @@ if __name__ =='__main__':
     CONFIG ['num_test_episodes']=args .num_test_episodes
     CONFIG ['test_retrieval_k']=args .test_retrieval_k
     CONFIG ['test_retrieval_candidate_percentages']=args .test_retrieval_candidate_percentages
+    CONFIG ['test_retrieval_eval_scope']=args .test_retrieval_eval_scope
     CONFIG ['test_retrieval_first_expert_only']=args .test_retrieval_first_expert_only
     print ("--- 🚀 Initializing Test Run with Configuration ---")
     config_path =os .path .join (args .checkpoint_dir ,'training_config.pth')
@@ -74,6 +82,7 @@ if __name__ =='__main__':
     if CONFIG ['test_mode']=='retrieval_augmented':
         print (f"  - Retrieval K-values: {CONFIG ['test_retrieval_k']}")
         print (f"  - Retrieval Candidate %: {CONFIG ['test_retrieval_candidate_percentages']}")
+        print (f"  - Retrieval Eval Scope: {CONFIG ['test_retrieval_eval_scope']}")
     strategy =CONFIG ['embedding_strategy']
     print (f"--- Running Testing Script in Stand-Alone Mode (strategy: '{strategy }') ---")
     device =torch .device ("cuda"if torch .cuda .is_available ()else "cpu")
@@ -114,7 +123,8 @@ if __name__ =='__main__':
         k_list_retrieval ,
         CONFIG ['num_test_episodes'],
         candidate_percentages =CONFIG .get ('test_retrieval_candidate_percentages'),
-        first_expert_only =CONFIG .get ('test_retrieval_first_expert_only',False)
+        first_expert_only =CONFIG .get ('test_retrieval_first_expert_only',False),
+        eval_scope =CONFIG .get ('test_retrieval_eval_scope','experts')
         )
         print ("\n--- Running PCA-kNN Baseline Comparison ---")
         evaluate_pca_knn (
@@ -125,14 +135,8 @@ if __name__ =='__main__':
         evaluate_model (
         model ,test_tasks ,k_list_meta ,CONFIG ['num_test_episodes']
         )
-        evaluate_sklearn_baselines (
-        model ,test_tasks ,k_list_meta ,CONFIG ['num_test_episodes']
-        )
     else :
         print (f"⚠️ Warning: Unknown test_mode '{test_mode }'. Defaulting to 'meta_learning'.")
         evaluate_model (
-        model ,test_tasks ,k_list_meta ,CONFIG ['num_test_episodes']
-        )
-        evaluate_sklearn_baselines (
         model ,test_tasks ,k_list_meta ,CONFIG ['num_test_episodes']
         )
