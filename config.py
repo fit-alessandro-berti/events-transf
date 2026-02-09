@@ -41,11 +41,11 @@ CONFIG ={
 'num_shots_test':[1 ,5 ,10 ,20 ],
 'lr':1e-4 ,
 'weight_decay':0.01 ,
-'epochs':15 ,
-'episodes_per_epoch':1000 ,
+'epochs':45 ,
+'episodes_per_epoch':300 ,
 'episodic_label_shuffle':'yes', #no, yes, mixed
 'training_strategy':'retrieval', #episodic, retrieval, mixed
-'proto_head_warmup_epochs':2 ,
+'proto_head_warmup_epochs':3 ,
 'proto_head_lr_mult_after_warmup':0.1 ,
 'retrieval_train_k':20 ,
 'retrieval_train_batch_size':128 ,
