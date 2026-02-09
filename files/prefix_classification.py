@@ -11,6 +11,9 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
 from sklearn.neighbors import KNeighborsClassifier
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import LinearSVC
 
 from prefix_feature_extraction import build_prefix_features_next_activity
 
@@ -132,10 +135,16 @@ def compute_class_geometry_metrics(
 def sample_training_data(features, targets, percentage, rng):
     if percentage >= 100:
         return features, targets
-    sample_size = max(1, int(round(len(features) * (percentage / 100.0))))
-    indices = rng.sample(range(len(features)), sample_size)
-    sampled_features = [features[i] for i in indices]
-    sampled_targets = [targets[i] for i in indices]
+    sample_size = max(2, int(round(len(features) * (percentage / 100.0))))
+    sample_size = min(sample_size, len(features))
+    class_count = len(set(targets))
+    attempts = 20 if class_count > 1 else 1
+    for _ in range(attempts):
+        indices = rng.sample(range(len(features)), sample_size)
+        sampled_features = [features[i] for i in indices]
+        sampled_targets = [targets[i] for i in indices]
+        if len(set(sampled_targets)) > 1 or class_count <= 1:
+            return sampled_features, sampled_targets
     return sampled_features, sampled_targets
 
 
@@ -165,6 +174,26 @@ def train_pca_random_forest_classifier(features, targets, requested_components=3
     )
     clf.fit(reduced, targets)
     return {"pca": pca, "model": clf, "n_components": n_components}
+
+
+def train_linear_svc_classifier(features, targets):
+    clf = Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            (
+                "model",
+                LinearSVC(
+                    C=0.1,
+                    class_weight="balanced",
+                    tol=1e-4,
+                    max_iter=20000,
+                    dual=True,
+                ),
+            ),
+        ]
+    )
+    clf.fit(features, targets)
+    return clf
 
 
 def evaluate_classifier_random_forest(model, features, targets):
@@ -257,8 +286,17 @@ def main():
         X_sampled, y_sampled = sample_training_data(
             X_train, y_train, percentage, rng
         )
+        if len(set(y_sampled)) < 2:
+            print(f"Training sample %: {percentage}")
+            print(f"Train size (sampled): {len(X_sampled)}")
+            print("Skipped: sampled training subset has only one class.")
+            continue
         clf = train_classifier_random_forest(X_sampled, y_sampled)
         accuracy = evaluate_classifier_random_forest(clf, X_test, y_test)
+        linear_svc = train_linear_svc_classifier(X_sampled, y_sampled)
+        linear_svc_accuracy = evaluate_classifier_random_forest(
+            linear_svc, X_test, y_test
+        )
         pca_rf = train_pca_random_forest_classifier(
             X_sampled, y_sampled, requested_components=3
         )
@@ -277,6 +315,10 @@ def main():
         print(f"Training sample %: {percentage}")
         print(f"Train size (sampled): {len(X_sampled)}")
         print(f"RF (no PCA) test accuracy: {accuracy:.4f}")
+        print(
+            "StandardScaler+LinearSVC test accuracy: "
+            f"{linear_svc_accuracy:.4f}"
+        )
         print(
             "PCA(3)+RF test accuracy: "
             f"{pca_rf_accuracy:.4f} (components: {pca_rf['n_components']})"

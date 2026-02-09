@@ -8,7 +8,10 @@ import numpy as np
 import pm4py
 from pm4py.util import xes_constants
 from sklearn.decomposition import PCA
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
+from sklearn.linear_model import Ridge
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import KNeighborsRegressor
 
 from sklearn.metrics import r2_score
@@ -60,7 +63,8 @@ def fit_pca_fixed_components(features, requested_components=3):
 def sample_training_data(features, targets, percentage, rng):
     if percentage >= 100:
         return features, targets
-    sample_size = max(1, int(round(len(features) * (percentage / 100.0))))
+    sample_size = max(2, int(round(len(features) * (percentage / 100.0))))
+    sample_size = min(sample_size, len(features))
     indices = rng.sample(range(len(features)), sample_size)
     sampled_features = [features[i] for i in indices]
     sampled_targets = [targets[i] for i in indices]
@@ -95,14 +99,41 @@ def train_pca_random_forest_regressor(features, targets, requested_components=3)
     return {"pca": pca, "model": reg, "n_components": n_components}
 
 
+def train_ridge_regressor(features, targets):
+    reg = Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            ("model", Ridge(alpha=50.0)),
+        ]
+    )
+    reg.fit(features, targets)
+    return reg
+
+
+def train_hgbr_regressor(features, targets):
+    reg = HistGradientBoostingRegressor(
+        random_state=42,
+        max_depth=3,
+        learning_rate=0.05,
+        max_iter=400,
+        min_samples_leaf=10,
+        l2_regularization=2.0,
+        early_stopping=True,
+        validation_fraction=0.2,
+        n_iter_no_change=20,
+    )
+    reg.fit(features, targets)
+    return reg
+
+
+def _to_hours(values):
+    hours = inverse_transform_time(np.asarray(values, dtype=float))
+    return np.maximum(hours, 0.0)
+
+
 def compute_regression_metrics(targets_transformed, predictions_transformed, case_ids):
-    targets_hours = inverse_transform_time(
-        np.asarray(targets_transformed, dtype=float)
-    )
-    preds_hours = inverse_transform_time(
-        np.asarray(predictions_transformed, dtype=float)
-    )
-    preds_hours[preds_hours < 0] = 0
+    targets_hours = _to_hours(targets_transformed)
+    preds_hours = _to_hours(predictions_transformed)
 
     abs_errors = [abs(y_true - y_hat) for y_true, y_hat in zip(targets_hours, preds_hours)]
     sq_errors = [(y_true - y_hat) ** 2 for y_true, y_hat in zip(targets_hours, preds_hours)]
@@ -190,7 +221,7 @@ def main():
 
     candidate_percentages = [0.5, 1, 3, 5]
 
-    targets_hours = np.asarray(target, dtype=float) / 3600.0
+    targets_hours = np.maximum(np.asarray(target, dtype=float) / 3600.0, 0.0)
     targets_transformed = transform_time(targets_hours).tolist()
 
     X_train, X_test, y_train, y_test, _, case_test = train_test_split(
@@ -224,11 +255,27 @@ def main():
         pca_metrics = evaluate_pca_knn_regressor(
             pca_knn, X_test, y_test, case_test
         )
+        ridge = train_ridge_regressor(X_sampled, y_sampled)
+        ridge_metrics = evaluate_regressor(ridge, X_test, y_test, case_test)
+        hgbr = train_hgbr_regressor(X_sampled, y_sampled)
+        hgbr_metrics = evaluate_regressor(hgbr, X_test, y_test, case_test)
         print(f"Training sample %: {percentage}")
         print(f"Train size (sampled): {len(X_sampled)}")
         print(f"RF (no PCA) Per-case MAE (hours): {metrics['mae_hours']:.4f}")
         print(f"RF (no PCA) Per-case RMSE (hours): {metrics['rmse_hours']:.4f}")
         print(f"RF (no PCA) R2: {metrics['r2']:.4f}")
+        print(
+            "StandardScaler+Ridge "
+            f"MAE (hours): {ridge_metrics['mae_hours']:.4f} "
+            f"RMSE (hours): {ridge_metrics['rmse_hours']:.4f} "
+            f"R2: {ridge_metrics['r2']:.4f}"
+        )
+        print(
+            "HistGradientBoostingRegressor "
+            f"MAE (hours): {hgbr_metrics['mae_hours']:.4f} "
+            f"RMSE (hours): {hgbr_metrics['rmse_hours']:.4f} "
+            f"R2: {hgbr_metrics['r2']:.4f}"
+        )
         print(
             "PCA(3)+RF "
             f"MAE (hours): {pca_rf_metrics['mae_hours']:.4f} "

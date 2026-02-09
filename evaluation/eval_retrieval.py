@@ -240,7 +240,10 @@ def _compute_case_metrics (labels_hours ,preds_hours ,case_test ):
     mae =float (np .mean (case_mae_values ))if case_mae_values else float ("nan")
     rmse =float (np .mean (case_rmse_values ))if case_rmse_values else float ("nan")
     return mae ,rmse ,len (per_case_abs )
-def _subsample_training_set (x_train ,y_train ,train_percentage ,stratify =None ):
+def _to_hours (values ):
+    hours =inverse_transform_time (np .asarray (values ,dtype =float ))
+    return np .maximum (hours ,0.0 )
+def _subsample_training_set (x_train ,y_train ,train_percentage ,stratify =None ,min_samples =2 ):
     if train_percentage is None :
         return x_train ,y_train
     try :
@@ -251,6 +254,9 @@ def _subsample_training_set (x_train ,y_train ,train_percentage ,stratify =None 
         return x_train ,y_train
     train_percentage =max (1.0 ,min (train_percentage ,100.0 ))
     sample_size =max (1 ,int (np .ceil (len (x_train )*(train_percentage /100.0 ))))
+    sample_size =max (sample_size ,int (min_samples ))
+    if stratify is not None :
+        sample_size =max (sample_size ,int (np .unique (stratify ).size ))
     if sample_size >=len (x_train ):
         return x_train ,y_train
     try :
@@ -294,7 +300,14 @@ train_percentage =100
             x_train ,x_test ,y_train ,y_test =train_test_split (
             x ,y ,test_size =0.2 ,random_state =42 ,stratify =None
             )
-        x_train ,y_train =_subsample_training_set (x_train ,y_train ,train_percentage ,stratify )
+        min_train_samples =max (2 ,int (np .unique (y_train ).size ))
+        x_train ,y_train =_subsample_training_set (
+        x_train ,
+        y_train ,
+        train_percentage ,
+        stratify ,
+        min_samples =min_train_samples
+        )
         if len (x_train )<2 :
             print (f"  - [{expert_name }] sklearn metrics skipped (classification): not enough training samples.")
             return
@@ -326,7 +339,12 @@ train_percentage =100
         x_train ,x_test ,y_train ,y_test ,_ ,case_test =train_test_split (
         x ,y ,case_ids ,test_size =0.2 ,random_state =42
         )
-        x_train ,y_train =_subsample_training_set (x_train ,y_train ,train_percentage )
+        x_train ,y_train =_subsample_training_set (
+        x_train ,
+        y_train ,
+        train_percentage ,
+        min_samples =2
+        )
         if len (x_train )<2 :
             print (f"  - [{expert_name }] sklearn metrics skipped (regression): not enough training samples.")
             return
@@ -341,9 +359,8 @@ train_percentage =100
                 reg .fit (x_train ,y_train )
                 preds =reg .predict (x_test )
                 preds =np .asarray (preds ).reshape (-1 )
-                preds_hours =inverse_transform_time (preds )
-                preds_hours [preds_hours <0 ]=0
-                labels_hours =inverse_transform_time (np .array (y_test ))
+                preds_hours =_to_hours (preds )
+                labels_hours =_to_hours (y_test )
                 mae ,rmse ,num_cases =_compute_case_metrics (labels_hours ,preds_hours ,case_test )
                 if len (labels_hours )<2 :
                     r2 =float ("nan")
@@ -606,9 +623,8 @@ first_expert_only =False
                         preds_np =np .array (all_preds )
                         labels_np =np .array (all_true_labels )
                         avg_conf =np .mean (all_confidences )
-                        preds =inverse_transform_time (preds_np )
-                        preds [preds <0 ]=0
-                        labels =inverse_transform_time (labels_np )
+                        preds =_to_hours (preds_np )
+                        labels =_to_hours (labels_np )
                         print (
                         f"[{expert_name } | {k }-NN | pct={pct }%] "
                         f"Retrieval MAE: {mean_absolute_error (labels ,preds ):.4f} | "

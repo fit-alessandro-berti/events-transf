@@ -22,7 +22,9 @@ def _autocast_disabled_for(device: torch.device):
     return nullcontext()
 
 
-def _sample_balanced_classification_batch(task_pool, batch_size, min_per_class=2):
+def _sample_balanced_classification_batch(
+    task_pool, batch_size, min_per_class=2, max_classes=None
+):
     """
     Ensure selected classes appear at least min_per_class times, ideally across cases.
     Fall back to random sampling when constraints cannot be met.
@@ -47,6 +49,8 @@ def _sample_balanced_classification_batch(task_pool, batch_size, min_per_class=2
         return random.sample(task_pool, batch_size)
 
     num_classes = min(len(eligible), max(1, batch_size // min_per_class))
+    if max_classes is not None:
+        num_classes = min(num_classes, max(1, int(max_classes)))
     chosen_labels = random.sample(eligible, num_classes)
 
     batch = []
@@ -64,8 +68,14 @@ def _sample_balanced_classification_batch(task_pool, batch_size, min_per_class=2
         while sum(1 for item in batch if item[1] == label) < min_per_class:
             batch.append(random.choice(items))
 
-    while len(batch) < batch_size:
-        batch.append(random.choice(task_pool))
+    if chosen_labels:
+        label_cycle = chosen_labels[:]
+        random.shuffle(label_cycle)
+        cycle_idx = 0
+        while len(batch) < batch_size:
+            lbl = label_cycle[cycle_idx % len(label_cycle)]
+            batch.append(random.choice(by_label[lbl]))
+            cycle_idx += 1
 
     return batch[:batch_size]
 
@@ -153,6 +163,24 @@ def _regression_neighbor_contrastive(
         return torch.stack(losses).mean()
 
 
+def _variance_loss(z: torch.Tensor, eps: float = 1e-4, target_std: float = 1.0):
+    z = z.float()
+    z = z - z.mean(dim=0, keepdim=True)
+    std = torch.sqrt(z.var(dim=0) + eps)
+    return torch.mean(F.relu(target_std - std))
+
+
+def _covariance_loss(z: torch.Tensor):
+    z = z.float()
+    z = z - z.mean(dim=0, keepdim=True)
+    n, d = z.shape
+    if n <= 1:
+        return torch.tensor(0.0, device=z.device)
+    cov = (z.t() @ z) / (n - 1)
+    off_diag = cov - torch.diag(torch.diag(cov))
+    return (off_diag ** 2).sum() / d
+
+
 def run_retrieval_step(model, task_data_pool, task_type, config):
     progress_bar_task = f"retrieval_{task_type}"
     retrieval_k_train = int(config.get("retrieval_train_k", 5))
@@ -163,8 +191,12 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
 
     if task_type == "classification":
         min_per_class = int(config.get("retrieval_min_per_class", 2))
+        max_classes = config.get("retrieval_train_max_classes", None)
         batch_tasks_raw = _sample_balanced_classification_batch(
-            task_data_pool, retrieval_batch_size, min_per_class=min_per_class
+            task_data_pool,
+            retrieval_batch_size,
+            min_per_class=min_per_class,
+            max_classes=max_classes,
         )
     else:
         batch_tasks_raw = random.sample(task_data_pool, retrieval_batch_size)
@@ -178,6 +210,7 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
 
     all_embeddings_norm = F.normalize(all_embeddings, p=2, dim=1)
     all_embeddings_norm_detached = all_embeddings_norm.detach()
+    cls_pos_k_cfg = int(config.get("retrieval_cls_pos_k", 2))
 
     contrastive_w = float(config.get("retrieval_contrastive_weight", 0.2))
     contrastive_temp = float(config.get("retrieval_contrastive_temp", 0.07))
@@ -216,24 +249,37 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
 
             positive_mask = (batch_labels == query_label) & (batch_case_ids != query_case_id)
             positive_indices = np.where(positive_mask)[0]
-            if len(positive_indices) == 0:
+            if positive_indices.size == 0:
                 continue
 
-            chosen_positive_idx = int(random.choice(positive_indices))
-            with torch.no_grad():
-                mask_plus_pos = torch.cat(
-                    [mask_tensor, torch.tensor([chosen_positive_idx], device=device)]
-                )
+            pos_k = min(cls_pos_k_cfg, int(positive_indices.size), max(1, retrieval_k_train - 1))
+            chosen_pos_idx = np.random.choice(positive_indices, size=pos_k, replace=False)
+            pos_tensor = torch.from_numpy(chosen_pos_idx).to(device)
 
-            neighbor_indices = find_knn_indices(
+            neg_k = retrieval_k_train - pos_k
+            if neg_k <= 0:
+                continue
+
+            with torch.no_grad():
+                neg_mask = (batch_case_ids == query_case_id) | (batch_labels == query_label)
+                neg_mask_idx = torch.from_numpy(np.where(neg_mask)[0]).to(device)
+
+            neg_indices = find_knn_indices(
                 query_embedding_norm,
                 all_embeddings_norm_detached,
-                k=max(0, retrieval_k_train - 1),
-                indices_to_mask=mask_plus_pos,
+                k=neg_k,
+                indices_to_mask=neg_mask_idx,
             )
-            support_indices = torch.cat(
-                [neighbor_indices, torch.tensor([chosen_positive_idx], device=device)]
-            )
+
+            if neg_indices.numel() < neg_k:
+                avail = np.where(~neg_mask)[0]
+                if avail.size == 0:
+                    continue
+                need = neg_k - int(neg_indices.numel())
+                fill = np.random.choice(avail, size=min(need, avail.size), replace=False)
+                neg_indices = torch.cat([neg_indices, torch.from_numpy(fill).to(device)])
+
+            support_indices = torch.cat([pos_tensor, neg_indices])[:retrieval_k_train]
 
             support_embeddings = all_embeddings[support_indices]
             support_labels_list = batch_labels[support_indices.cpu().numpy()]
@@ -285,5 +331,16 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
             loss_out = loss_out + (contrastive_w * contrastive_loss)
     elif contrastive_loss is not None:
         loss_out = contrastive_w * contrastive_loss
+
+    var_w = float(config.get("retrieval_var_weight", 0.0))
+    cov_w = float(config.get("retrieval_cov_weight", 0.0))
+    if loss_out is not None and (var_w > 0 or cov_w > 0):
+        with _autocast_disabled_for(device):
+            reg = torch.tensor(0.0, device=device)
+            if var_w > 0:
+                reg = reg + (var_w * _variance_loss(all_embeddings))
+            if cov_w > 0:
+                reg = reg + (cov_w * _covariance_loss(all_embeddings))
+        loss_out = loss_out + reg
 
     return loss_out, progress_bar_task
