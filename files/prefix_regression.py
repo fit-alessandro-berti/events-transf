@@ -219,7 +219,7 @@ def main():
     if not feature:
         raise SystemExit("No prefixes with timestamps found in the log.")
 
-    candidate_percentages = [0.5, 1, 3, 5]
+    candidate_percentages = [0.5, 1, 3, 5, 10, 20, 50, 100]
 
     targets_hours = np.maximum(np.asarray(target, dtype=float) / 3600.0, 0.0)
     targets_transformed = transform_time(targets_hours).tolist()

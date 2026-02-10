@@ -257,7 +257,7 @@ def main():
     if not feature:
         raise SystemExit("No prefixes found in the log.")
 
-    candidate_percentages = [0.5, 1, 3, 5]
+    candidate_percentages = [0.5, 1, 3, 5, 10, 20, 50, 100]
 
     class_counts = Counter(target)
     min_class = min(class_counts.values()) if class_counts else 0
