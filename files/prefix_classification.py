@@ -10,41 +10,8 @@ from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
-from sklearn.svm import LinearSVC
 
 from prefix_feature_extraction import build_prefix_features_next_activity
-
-
-def select_components_by_cumulative_variance(
-    explained_variance_ratio, threshold=0.93
-):
-    cumulative = 0.0
-    for idx, ratio in enumerate(explained_variance_ratio):
-        cumulative += ratio
-        if cumulative >= threshold:
-            return idx + 1
-    return len(explained_variance_ratio)
-
-
-def fit_pca_with_variance_threshold(features, threshold=0.93):
-    if not features:
-        raise ValueError("No features provided for PCA fitting.")
-    max_components = min(len(features), len(features[0]))
-    if max_components <= 1:
-        pca = PCA(n_components=1)
-        pca.fit(features)
-        return 1, pca
-    pca_full = PCA(n_components=max_components, random_state=42)
-    pca_full.fit(features)
-    n_components = select_components_by_cumulative_variance(
-        pca_full.explained_variance_ratio_.tolist(), threshold=threshold
-    )
-    pca = PCA(n_components=n_components, random_state=42)
-    pca.fit(features)
-    return n_components, pca
 
 
 def fit_pca_fixed_components(features, requested_components=3):
@@ -156,14 +123,6 @@ def train_classifier_random_forest(features, targets):
     return clf
 
 
-def train_pca_knn_classifier(features, targets):
-    n_components, pca = fit_pca_with_variance_threshold(features, threshold=0.93)
-    reduced = pca.transform(features)
-    knn = KNeighborsClassifier(n_neighbors=1)
-    knn.fit(reduced, targets)
-    return {"pca": pca, "model": knn, "n_components": n_components}
-
-
 def train_pca_random_forest_classifier(features, targets, requested_components=3):
     n_components, pca = fit_pca_fixed_components(
         features, requested_components=requested_components
@@ -176,38 +135,12 @@ def train_pca_random_forest_classifier(features, targets, requested_components=3
     return {"pca": pca, "model": clf, "n_components": n_components}
 
 
-def train_linear_svc_classifier(features, targets):
-    clf = Pipeline(
-        [
-            ("scaler", StandardScaler()),
-            (
-                "model",
-                LinearSVC(
-                    C=0.1,
-                    class_weight="balanced",
-                    tol=1e-4,
-                    max_iter=20000,
-                    dual=True,
-                ),
-            ),
-        ]
-    )
-    clf.fit(features, targets)
-    return clf
-
-
 def evaluate_classifier_random_forest(model, features, targets):
     predictions = model.predict(features)
     return accuracy_score(targets, predictions)
 
 
 def evaluate_pca_random_forest_classifier(model_bundle, features, targets):
-    reduced = model_bundle["pca"].transform(features)
-    predictions = model_bundle["model"].predict(reduced)
-    return accuracy_score(targets, predictions)
-
-
-def evaluate_pca_knn_classifier(model_bundle, features, targets):
     reduced = model_bundle["pca"].transform(features)
     predictions = model_bundle["model"].predict(reduced)
     return accuracy_score(targets, predictions)
@@ -223,7 +156,7 @@ def main():
     parser.add_argument(
         "log_path",
         nargs="?",
-        default="C:/receipt.xes",
+        default="C:/roadtraffic_10000.xes.gz",
         help="Path to the XES log (default: tests/input_data/receipt.xes)",
     )
     parser.add_argument(
@@ -293,32 +226,22 @@ def main():
             continue
         clf = train_classifier_random_forest(X_sampled, y_sampled)
         accuracy = evaluate_classifier_random_forest(clf, X_test, y_test)
-        linear_svc = train_linear_svc_classifier(X_sampled, y_sampled)
-        linear_svc_accuracy = evaluate_classifier_random_forest(
-            linear_svc, X_test, y_test
-        )
         pca_rf = train_pca_random_forest_classifier(
             X_sampled, y_sampled, requested_components=3
         )
         pca_rf_accuracy = evaluate_pca_random_forest_classifier(
             pca_rf, X_test, y_test
         )
-        pca_knn = train_pca_knn_classifier(X_sampled, y_sampled)
-        pca_accuracy = evaluate_pca_knn_classifier(pca_knn, X_test, y_test)
         rf_metrics = compute_class_geometry_metrics(
             X_test, y_test, random.Random(42)
         )
-        pca_test = pca_knn["pca"].transform(X_test)
+        pca_test = pca_rf["pca"].transform(X_test)
         pca_metrics = compute_class_geometry_metrics(
             pca_test, y_test, random.Random(42)
         )
         print(f"Training sample %: {percentage}")
         print(f"Train size (sampled): {len(X_sampled)}")
         print(f"RF (no PCA) test accuracy: {accuracy:.4f}")
-        print(
-            "StandardScaler+LinearSVC test accuracy: "
-            f"{linear_svc_accuracy:.4f}"
-        )
         print(
             "PCA(3)+RF test accuracy: "
             f"{pca_rf_accuracy:.4f} (components: {pca_rf['n_components']})"
@@ -351,10 +274,6 @@ def main():
         else:
             print("RF knn_purity@5 (mean): n/a")
             print("RF knn_purity@10 (mean): n/a")
-        print(
-            f"PCA+kNN (k=1) test accuracy: {pca_accuracy:.4f} "
-            f"(components: {pca_knn['n_components']})"
-        )
         print(
             "PCA intra_centroid_cos (mean): "
             f"{pca_metrics.get('intra_centroid_cos', float('nan')):.4f}"
