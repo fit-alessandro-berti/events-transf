@@ -67,8 +67,15 @@ class PrototypicalHead (nn .Module ):
         query =_l2_normalize (query_features )
         support ,query =self ._center_and_renorm (support ,query )
         scale =self .reg_logit_scale .clamp (1.0 ,100.0 )
-        sims =(query @support .t ()) *scale
+        sims_raw =query @support .t ()
+        sims =sims_raw *scale
         weights =F .softmax (sims ,dim =1 )
         prediction =weights @support_labels .view (-1 ).float ()
-        confidence =torch .max (weights ,dim =1 ).values
+        support_targets =support_labels .view (1 ,-1 ).float ()
+        pred_center =prediction .view (-1 ,1 )
+        var =(weights *(support_targets -pred_center )**2 ).sum (dim =1 )
+        std =torch .sqrt (var +1e-8 )
+        conf_consensus =1.0 /(1.0 +std )
+        conf_similarity =((sims_raw .max (dim =1 ).values +1.0 )/2.0 ).clamp (0.0 ,1.0 )
+        confidence =(conf_consensus *conf_similarity ).clamp (0.0 ,1.0 )
         return prediction ,confidence
