@@ -10,7 +10,7 @@ from pm4py.util import xes_constants
 from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestRegressor
 
-from sklearn.metrics import r2_score
+from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.model_selection import train_test_split
 
 from prefix_feature_extraction import build_prefix_features_remaining_time
@@ -100,6 +100,48 @@ def evaluate_pca_random_forest_regressor(model_bundle, features, targets, case_i
     return compute_regression_metrics(targets, predictions, case_ids)
 
 
+def _rf_regression_confidence(model, features):
+    if not hasattr(model, "estimators_") or not model.estimators_:
+        return np.ones(len(features), dtype=float)
+    tree_preds = np.vstack([tree.predict(features) for tree in model.estimators_])
+    pred_std = np.std(tree_preds, axis=0)
+    std_min = float(np.min(pred_std))
+    std_max = float(np.max(pred_std))
+    if std_max <= std_min:
+        return np.ones_like(pred_std, dtype=float)
+    return 1.0 - (pred_std - std_min) / (std_max - std_min)
+
+
+def report_confidence_buckets_regression(
+    confidences, predictions_transformed, targets_transformed, num_buckets=5, label="RF"
+):
+    if len(confidences) == 0:
+        print(f"{label} confidence buckets: skipped (no confidence values)")
+        return
+    conf = np.asarray(confidences, dtype=float)
+    preds = _to_hours(predictions_transformed)
+    y_true = _to_hours(targets_transformed)
+    sorted_idx = np.argsort(conf)
+    bucket_indices = np.array_split(sorted_idx, num_buckets)
+    print(f"{label} confidence buckets (dynamic, equal-sized by rank):")
+    for i, idx in enumerate(bucket_indices):
+        n = int(idx.size)
+        if n == 0:
+            print(f"  - Bucket {i + 1}/{num_buckets}: n=0")
+            continue
+        bucket_conf = conf[idx]
+        mae = mean_absolute_error(y_true[idx], preds[idx])
+        if n < 2 or np.unique(y_true[idx]).size < 2:
+            r2_str = "nan"
+        else:
+            r2_str = f"{r2_score(y_true[idx], preds[idx]):.4f}"
+        print(
+            f"  - Bucket {i + 1}/{num_buckets} "
+            f"(conf in [{bucket_conf.min():.4f}, {bucket_conf.max():.4f}]): "
+            f"n={n} | MAE={mae:.4f} | R2={r2_str}"
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=(
@@ -110,7 +152,7 @@ def main():
     parser.add_argument(
         "log_path",
         nargs="?",
-        default="C:/roadtraffic_10000.xes.gz",
+        default="C:/receipt.xes",
         help="Path to the XES log (default: tests/input_data/receipt.xes)",
     )
     parser.add_argument(
@@ -182,12 +224,31 @@ def main():
         print(f"RF (no PCA) Per-case MAE (hours): {metrics['mae_hours']:.4f}")
         print(f"RF (no PCA) Per-case RMSE (hours): {metrics['rmse_hours']:.4f}")
         print(f"RF (no PCA) R2: {metrics['r2']:.4f}")
+        rf_preds = reg.predict(X_test)
+        rf_conf = _rf_regression_confidence(reg, X_test)
+        report_confidence_buckets_regression(
+            rf_conf,
+            rf_preds,
+            y_test,
+            num_buckets=5,
+            label="RF (no PCA)",
+        )
         print(
             "PCA(3)+RF "
             f"MAE (hours): {pca_rf_metrics['mae_hours']:.4f} "
             f"RMSE (hours): {pca_rf_metrics['rmse_hours']:.4f} "
             f"R2: {pca_rf_metrics['r2']:.4f} "
             f"(components: {pca_rf['n_components']})"
+        )
+        pca_test = pca_rf["pca"].transform(X_test)
+        pca_rf_preds = pca_rf["model"].predict(pca_test)
+        pca_rf_conf = _rf_regression_confidence(pca_rf["model"], pca_test)
+        report_confidence_buckets_regression(
+            pca_rf_conf,
+            pca_rf_preds,
+            y_test,
+            num_buckets=5,
+            label="PCA(3)+RF",
         )
 
     if args.show_sample:

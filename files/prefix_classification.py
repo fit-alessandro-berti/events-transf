@@ -146,6 +146,32 @@ def evaluate_pca_random_forest_classifier(model_bundle, features, targets):
     return accuracy_score(targets, predictions)
 
 
+def report_confidence_buckets_classification(
+    confidences, predictions, targets, num_buckets=5, label="RF"
+):
+    if len(confidences) == 0:
+        print(f"{label} confidence buckets: skipped (no confidence values)")
+        return
+    conf = np.asarray(confidences, dtype=float)
+    preds = np.asarray(predictions)
+    y_true = np.asarray(targets)
+    sorted_idx = np.argsort(conf)
+    bucket_indices = np.array_split(sorted_idx, num_buckets)
+    print(f"{label} confidence buckets (dynamic, equal-sized by rank):")
+    for i, idx in enumerate(bucket_indices):
+        n = int(idx.size)
+        if n == 0:
+            print(f"  - Bucket {i + 1}/{num_buckets}: n=0")
+            continue
+        bucket_conf = conf[idx]
+        acc = accuracy_score(y_true[idx], preds[idx])
+        print(
+            f"  - Bucket {i + 1}/{num_buckets} "
+            f"(conf in [{bucket_conf.min():.4f}, {bucket_conf.max():.4f}]): "
+            f"n={n} | Accuracy={acc:.4f}"
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=(
@@ -156,7 +182,7 @@ def main():
     parser.add_argument(
         "log_path",
         nargs="?",
-        default="C:/roadtraffic_10000.xes.gz",
+        default="C:/receipt.xes",
         help="Path to the XES log (default: tests/input_data/receipt.xes)",
     )
     parser.add_argument(
@@ -242,9 +268,24 @@ def main():
         print(f"Training sample %: {percentage}")
         print(f"Train size (sampled): {len(X_sampled)}")
         print(f"RF (no PCA) test accuracy: {accuracy:.4f}")
+        rf_preds = clf.predict(X_test)
+        rf_conf = np.max(clf.predict_proba(X_test), axis=1)
+        report_confidence_buckets_classification(
+            rf_conf, rf_preds, y_test, num_buckets=5, label="RF (no PCA)"
+        )
         print(
             "PCA(3)+RF test accuracy: "
             f"{pca_rf_accuracy:.4f} (components: {pca_rf['n_components']})"
+        )
+        pca_test_for_pred = pca_rf["pca"].transform(X_test)
+        pca_rf_preds = pca_rf["model"].predict(pca_test_for_pred)
+        pca_rf_conf = np.max(pca_rf["model"].predict_proba(pca_test_for_pred), axis=1)
+        report_confidence_buckets_classification(
+            pca_rf_conf,
+            pca_rf_preds,
+            y_test,
+            num_buckets=5,
+            label="PCA(3)+RF",
         )
         print(
             "RF intra_centroid_cos (mean): "
