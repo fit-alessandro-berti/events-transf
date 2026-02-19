@@ -213,27 +213,27 @@ num_buckets :int =5
     conf =np .clip (np .asarray (confidences ,dtype =float ),0.0 ,1.0 )
     preds_np =np .asarray (preds )
     labels_np =np .asarray (true_labels )
-    edges =np .linspace (0.0 ,1.0 ,num_buckets +1 )
-    print ("    Confidence buckets:")
-    for i in range (num_buckets ):
-        low =edges [i ]
-        high =edges [i +1 ]
-        if i <num_buckets -1 :
-            mask =(conf >=low )&(conf <high )
-            bucket_label =f"[{low :.2f}, {high :.2f})"
-        else :
-            mask =(conf >=low )&(conf <=high )
-            bucket_label =f"[{low :.2f}, {high :.2f}]"
-        n =int (mask .sum ())
+    sorted_idx =np .argsort (conf )
+    bucket_indices =np .array_split (sorted_idx ,num_buckets )
+    print ("    Confidence buckets (dynamic, equal-sized by rank):")
+    for i ,idx in enumerate (bucket_indices ):
+        n =int (idx .size )
         if n ==0 :
-            print (f"      - {bucket_label }: n=0")
+            print (f"      - Bucket {i +1 }/{num_buckets }: n=0")
             continue
+        bucket_conf =conf [idx ]
+        conf_min =float (bucket_conf .min ())
+        conf_max =float (bucket_conf .max ())
+        bucket_label =(
+        f"Bucket {i +1 }/{num_buckets } "
+        f"(conf in [{conf_min :.4f}, {conf_max :.4f}])"
+        )
         if task_type =='classification':
-            acc =accuracy_score (labels_np [mask ],preds_np [mask ])
+            acc =accuracy_score (labels_np [idx ],preds_np [idx ])
             print (f"      - {bucket_label }: n={n } | Accuracy={acc :.4f}")
         else :
-            bucket_preds =_to_hours (preds_np [mask ])
-            bucket_labels =_to_hours (labels_np [mask ])
+            bucket_preds =_to_hours (preds_np [idx ])
+            bucket_labels =_to_hours (labels_np [idx ])
             mae =mean_absolute_error (bucket_labels ,bucket_preds )
             if n <2 or np .unique (bucket_labels ).size <2 :
                 r2_str ="nan"
