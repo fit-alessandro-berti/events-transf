@@ -20,6 +20,9 @@ def main ():
     parser .add_argument ("--test_mode",type =str ,default =None ,
     choices =["meta_learning","retrieval_augmented"],
     help ="Force a specific test mode")
+    parser .add_argument ("--test_retrieval_prediction_mode",type =str ,default =None ,
+    choices =["proto_head","foundation_knn"],
+    help ="Retrieval prediction mode when --test_mode retrieval_augmented is used.")
     args =parser .parse_args ()
     project_root =Path (__file__ ).resolve ().parent
     logs_dir =project_root /"logs"
@@ -57,6 +60,8 @@ def main ():
         cmd_base +=["--test_log_name",args .test_log_name ]
     if args .test_mode :
         cmd_base +=["--test_mode",args .test_mode ]
+    if args .test_retrieval_prediction_mode :
+        cmd_base +=["--test_retrieval_prediction_mode",args .test_retrieval_prediction_mode ]
     processed =skipped =0
     print (f"Found {len (all_candidate_logs )} candidate logs")
     print (f"Output directory → {checkpoint_output_dir }\n")

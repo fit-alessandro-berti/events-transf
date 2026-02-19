@@ -78,8 +78,11 @@ python testing.py \
   --checkpoint_dir ./checkpoints \
   --test_log_name D_unseen \
   --test_mode retrieval_augmented \
-  --test_retrieval_k 1 5 10 20
+  --test_retrieval_k 1 5 10 20 \
+  --test_retrieval_prediction_mode proto_head
 ```
+
+Use `--test_retrieval_prediction_mode foundation_knn` to bypass prototypical heads and predict directly with kNN over foundation-model feature embeddings.
 
 ## Simulating new logs (optional)
 

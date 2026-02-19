@@ -2,20 +2,10 @@ import torch
 import torch .nn .functional as F
 import random
 import numpy as np
-import warnings
 from sklearn .metrics import accuracy_score ,mean_absolute_error ,r2_score
-from sklearn .model_selection import train_test_split
-from sklearn .ensemble import RandomForestClassifier ,RandomForestRegressor
-from sklearn .decomposition import PCA
-from sklearn .ensemble import HistGradientBoostingRegressor
-from sklearn .linear_model import Ridge
-from sklearn .pipeline import Pipeline
-from sklearn .preprocessing import StandardScaler
-from sklearn .svm import LinearSVC
 from tqdm import tqdm
 from time_transf import inverse_transform_time
 from utils .retrieval_utils import find_knn_indices
-warnings .filterwarnings ("ignore",module =r"sklearn.*")
 def _report_similarity_metrics (
 embeddings :torch .Tensor ,
 labels :torch .Tensor ,
@@ -138,243 +128,9 @@ def _report_inter_expert_metrics (expert_task_embeddings ,task_type :str ):
             f"  - Inter-expert metrics ({task_type }) {expert_a } vs {expert_b }: "
             f"mean_cos={mean_cos :.4f} | mean_l2={mean_l2 :.4f}"
             )
-def _make_rf_classifier ():
-    return RandomForestClassifier (
-    n_estimators =800 ,
-    random_state =42 ,
-    n_jobs =-1 ,
-    class_weight ="balanced_subsample",
-    max_depth =8 ,
-    min_samples_leaf =5 ,
-    min_samples_split =10 ,
-    max_features ="sqrt"
-    )
-def _make_rf_regressor ():
-    return RandomForestRegressor (
-    n_estimators =800 ,
-    random_state =42 ,
-    n_jobs =-1 ,
-    max_depth =10 ,
-    min_samples_leaf =6 ,
-    min_samples_split =10 ,
-    max_features =0.5
-    )
-def _build_classifiers (enable_pca_rf =False ):
-    models =[
-    (
-    "RandomForest",
-    _make_rf_classifier (),
-    ),
-    ]
-    if enable_pca_rf :
-        models .append ((
-        "PCA(3)+RandomForest",
-        Pipeline ([
-        ("pca",PCA (n_components =3 ,random_state =42 )),
-        ("model",_make_rf_classifier ())
-        ])
-        ))
-    models .extend ([
-    (
-    "StandardScaler+LinearSVC",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",LinearSVC (
-    C =0.1 ,
-    class_weight ="balanced",
-    tol =1e-4 ,
-    max_iter =20000 ,
-    dual =True
-    )),
-    ]),
-    ),
-    ])
-    return models
-def _build_regressors (enable_pca_rf =False ):
-    models =[
-    (
-    "RandomForest",
-    _make_rf_regressor (),
-    ),
-    ]
-    if enable_pca_rf :
-        models .append ((
-        "PCA(3)+RandomForest",
-        Pipeline ([
-        ("pca",PCA (n_components =3 ,random_state =42 )),
-        ("model",_make_rf_regressor ())
-        ])
-        ))
-    models .extend ([
-    (
-    "StandardScaler+Ridge",
-    Pipeline ([
-    ("scaler",StandardScaler ()),
-    ("model",Ridge (alpha =50.0 )),
-    ]),
-    ),
-    (
-    "HistGradientBoostingRegressor",
-    HistGradientBoostingRegressor (
-    random_state =42 ,
-    max_depth =3 ,
-    learning_rate =0.05 ,
-    max_iter =400 ,
-    min_samples_leaf =10 ,
-    l2_regularization =2.0 ,
-    early_stopping =True ,
-    validation_fraction =0.2 ,
-    n_iter_no_change =20
-    ),
-    ),
-    ])
-    return models
-def _compute_case_metrics (labels_hours ,preds_hours ,case_test ):
-    per_case_abs ={}
-    per_case_sq ={}
-    for case_id ,y_true ,y_hat in zip (case_test ,labels_hours ,preds_hours ):
-        per_case_abs .setdefault (case_id ,[]).append (abs (y_true -y_hat ))
-        per_case_sq .setdefault (case_id ,[]).append ((y_true -y_hat )**2 )
-    case_mae_values =[sum (vals )/len (vals )for vals in per_case_abs .values ()]
-    case_rmse_values =[np .sqrt (sum (vals )/len (vals ))for vals in per_case_sq .values ()]
-    mae =float (np .mean (case_mae_values ))if case_mae_values else float ("nan")
-    rmse =float (np .mean (case_rmse_values ))if case_rmse_values else float ("nan")
-    return mae ,rmse ,len (per_case_abs )
 def _to_hours (values ):
     hours =inverse_transform_time (np .asarray (values ,dtype =float ))
     return np .maximum (hours ,0.0 )
-def _subsample_training_set (x_train ,y_train ,train_percentage ,stratify =None ,min_samples =2 ):
-    if train_percentage is None :
-        return x_train ,y_train
-    try :
-        train_percentage =float (train_percentage )
-    except (TypeError ,ValueError ):
-        return x_train ,y_train
-    if train_percentage >=100 or len (x_train )<2 :
-        return x_train ,y_train
-    train_percentage =max (1.0 ,min (train_percentage ,100.0 ))
-    sample_size =max (1 ,int (np .ceil (len (x_train )*(train_percentage /100.0 ))))
-    sample_size =max (sample_size ,int (min_samples ))
-    if stratify is not None :
-        sample_size =max (sample_size ,int (np .unique (stratify ).size ))
-    if sample_size >=len (x_train ):
-        return x_train ,y_train
-    try :
-        x_sub ,_ ,y_sub ,_ =train_test_split (
-        x_train ,
-        y_train ,
-        train_size =sample_size ,
-        random_state =42 ,
-        stratify =stratify
-        )
-        return x_sub ,y_sub
-    except ValueError :
-        rng =np .random .default_rng (42 )
-        idx =rng .choice (len (x_train ),size =sample_size ,replace =False )
-        return x_train [idx ],y_train [idx ]
-def _report_sklearn_metrics (
-expert_name :str ,
-task_type :str ,
-embeddings :torch .Tensor ,
-labels :torch .Tensor ,
-case_ids :np .ndarray =None ,
-train_percentage =100
-):
-    x =embeddings .detach ().cpu ().numpy ()
-    y =labels .detach ().cpu ().numpy ()
-    num_samples =x .shape [0 ]
-    if num_samples <2 :
-        print (f"  - [{expert_name }] sklearn metrics skipped ({task_type }): not enough samples.")
-        return
-    if task_type =='classification':
-        unique_labels ,counts =np .unique (y ,return_counts =True )
-        if unique_labels .size <2 :
-            print (f"  - [{expert_name }] sklearn metrics skipped (classification): only one class.")
-            return
-        stratify =y if counts .min ()>=2 else None
-        try :
-            x_train ,x_test ,y_train ,y_test =train_test_split (
-            x ,y ,test_size =0.2 ,random_state =42 ,stratify =stratify
-            )
-        except ValueError :
-            x_train ,x_test ,y_train ,y_test =train_test_split (
-            x ,y ,test_size =0.2 ,random_state =42 ,stratify =None
-            )
-        min_train_samples =max (2 ,int (np .unique (y_train ).size ))
-        x_train ,y_train =_subsample_training_set (
-        x_train ,
-        y_train ,
-        train_percentage ,
-        stratify ,
-        min_samples =min_train_samples
-        )
-        if len (x_train )<2 :
-            print (f"  - [{expert_name }] sklearn metrics skipped (classification): not enough training samples.")
-            return
-        if np .unique (y_train ).size <2 :
-            print (f"  - [{expert_name }] sklearn metrics skipped (classification): training set has one class.")
-            return
-        can_use_pca3 =min (x_train .shape [0 ],x_train .shape [1 ])>=3
-        if not can_use_pca3 :
-            print (
-            f"  - [{expert_name }] PCA(3)+RandomForest skipped (classification): "
-            "need at least 3 samples and 3 features in train split."
-            )
-        for model_name ,clf in _build_classifiers (enable_pca_rf =can_use_pca3 ):
-            try :
-                clf .fit (x_train ,y_train )
-                preds =clf .predict (x_test )
-                acc =accuracy_score (y_test ,preds )
-                print (
-                f"  - [{expert_name }] {model_name } (classification, 80/20, train={train_percentage }%): "
-                f"Accuracy={acc :.4f} (n={len (y_test )})"
-                )
-            except Exception as e :
-                print (
-                f"  - [{expert_name }] {model_name } (classification) failed: {e }"
-                )
-    else :
-        if case_ids is None :
-            case_ids =np .arange (len (y ))
-        x_train ,x_test ,y_train ,y_test ,_ ,case_test =train_test_split (
-        x ,y ,case_ids ,test_size =0.2 ,random_state =42
-        )
-        x_train ,y_train =_subsample_training_set (
-        x_train ,
-        y_train ,
-        train_percentage ,
-        min_samples =2
-        )
-        if len (x_train )<2 :
-            print (f"  - [{expert_name }] sklearn metrics skipped (regression): not enough training samples.")
-            return
-        can_use_pca3 =min (x_train .shape [0 ],x_train .shape [1 ])>=3
-        if not can_use_pca3 :
-            print (
-            f"  - [{expert_name }] PCA(3)+RandomForest skipped (regression): "
-            "need at least 3 samples and 3 features in train split."
-            )
-        for model_name ,reg in _build_regressors (enable_pca_rf =can_use_pca3 ):
-            try :
-                reg .fit (x_train ,y_train )
-                preds =reg .predict (x_test )
-                preds =np .asarray (preds ).reshape (-1 )
-                preds_hours =_to_hours (preds )
-                labels_hours =_to_hours (y_test )
-                mae ,rmse ,num_cases =_compute_case_metrics (labels_hours ,preds_hours ,case_test )
-                if len (labels_hours )<2 :
-                    r2 =float ("nan")
-                else :
-                    r2 =r2_score (labels_hours ,preds_hours )
-                print (
-                f"  - [{expert_name }] {model_name } (regression, 80/20, train={train_percentage }%): "
-                f"MAE={mae :.4f} | RMSE={rmse :.4f} | R2={r2 :.4f} "
-                f"(cases={num_cases } | samples={len (y_test )})"
-                )
-            except Exception as e :
-                print (
-                f"  - [{expert_name }] {model_name } (regression) failed: {e }"
-                )
 def _get_all_test_embeddings (model ,test_tasks_list ,batch_size =64 ):
     all_embeddings =[]
     all_labels =[]
@@ -409,20 +165,64 @@ def _get_all_test_embeddings (model ,test_tasks_list ,batch_size =64 ):
     all_labels_tensor =torch .as_tensor (all_labels ,device =device )
     all_case_ids_array =np .array (all_case_ids )
     return all_embeddings_tensor ,all_labels_tensor ,all_case_ids_array
+def _predict_feature_knn_classification (
+support_labels :torch .Tensor ,
+support_sims :torch .Tensor
+):
+    if support_labels is None or support_labels .numel ()==0 :
+        return None ,None
+    support_labels =support_labels .view (-1 ).long ()
+    support_sims =support_sims .view (-1 ).float ()
+    unique_labels ,inverse =torch .unique (support_labels ,sorted =True ,return_inverse =True )
+    class_counts =torch .bincount (inverse ,minlength =unique_labels .numel ()).float ()
+    max_count =class_counts .max ()
+    winners =(class_counts ==max_count ).nonzero (as_tuple =False ).view (-1 )
+    if winners .numel ()==1 :
+        winner_idx =winners [0 ]
+    else :
+        sim_sums =torch .zeros (unique_labels .numel (),device =support_sims .device ,dtype =support_sims .dtype )
+        sim_sums .scatter_add_ (0 ,inverse ,support_sims )
+        winner_local_idx =torch .argmax (sim_sums [winners ])
+        winner_idx =winners [winner_local_idx ]
+    pred_label =int (unique_labels [winner_idx ].item ())
+    pred_conf =float ((class_counts [winner_idx ]/max (1.0 ,float (support_labels .numel ()))).item ())
+    return pred_label ,pred_conf
+def _predict_feature_knn_regression (
+support_labels :torch .Tensor ,
+support_sims :torch .Tensor
+):
+    if support_labels is None or support_labels .numel ()==0 :
+        return None ,None
+    preds =support_labels .view (-1 ).float ()
+    pred_value =float (preds .mean ().item ())
+    if support_sims is None or support_sims .numel ()==0 :
+        pred_conf =0.0
+    else :
+        pred_conf =float (torch .clamp ((support_sims .float ().mean ()+1.0 )/2.0 ,0.0 ,1.0 ).item ())
+    return pred_value ,pred_conf
 def evaluate_retrieval_augmented (
 model ,
 test_tasks ,
 num_retrieval_k_list ,
 num_test_queries =200 ,
 candidate_percentages =None ,
-sklearn_train_percentage =100 ,
 first_expert_only =False ,
-eval_scope ="experts"
+eval_scope ="experts",
+prediction_mode ="proto_head"
 ):
     print ("\n🔬 Starting Retrieval-Augmented Evaluation...")
     model .eval ()
     if not candidate_percentages :
         candidate_percentages =[100 ]
+    mode =str (prediction_mode or "proto_head").strip ().lower ()
+    if mode in {"proto","proto_head","prototypical","prototypical_head"}:
+        mode ="proto_head"
+    elif mode in {"foundation_knn","feature_knn","knn"}:
+        mode ="foundation_knn"
+    else :
+        print (f"  - Unknown prediction_mode '{prediction_mode }', falling back to 'proto_head'.")
+        mode ="proto_head"
+    print (f"  - Retrieval prediction mode: {mode }")
     scope =str (eval_scope or "experts").strip ().lower ()
     if scope not in {"experts","model"}:
         print (f"  - Unknown eval_scope '{eval_scope }', falling back to 'experts'.")
@@ -640,6 +440,32 @@ eval_scope ="experts"
                         )
                         if top_k_indices .numel ()==0 :
                             continue
+                        support_embeddings =all_embeddings_norm [top_k_indices ]
+                        support_labels =all_labels [top_k_indices ]
+                        support_sims =(query_embedding @support_embeddings .T ).view (-1 )
+
+                        if mode =="foundation_knn":
+                            if task_type =='classification':
+                                predicted_class_label ,pred_confidence =_predict_feature_knn_classification (
+                                support_labels ,
+                                support_sims
+                                )
+                                if predicted_class_label is None :
+                                    continue
+                                all_preds .append (predicted_class_label )
+                                all_true_labels .append (query_label .item ())
+                                all_confidences .append (pred_confidence )
+                            else :
+                                pred_value ,pred_confidence =_predict_feature_knn_regression (
+                                support_labels ,
+                                support_sims
+                                )
+                                if pred_value is None :
+                                    continue
+                                all_preds .append (pred_value )
+                                all_true_labels .append (query_label .item ())
+                                all_confidences .append (pred_confidence )
+                            continue
 
                         if scope =="model" and len (experts_for_agg )>=1 :
                             expert_outputs =[]
@@ -686,8 +512,6 @@ eval_scope ="experts"
                                 all_confidences .append (pred_confidence )
                             continue
 
-                        support_embeddings =all_embeddings_norm [top_k_indices ]
-                        support_labels =all_labels [top_k_indices ]
                         with torch .no_grad ():
                             if task_type =='classification':
                                 logits ,proto_classes ,confidence =unit_model .proto_head .forward_classification (
