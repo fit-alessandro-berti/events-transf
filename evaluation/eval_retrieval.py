@@ -200,6 +200,47 @@ support_sims :torch .Tensor
     else :
         pred_conf =float (torch .clamp ((support_sims .float ().mean ()+1.0 )/2.0 ,0.0 ,1.0 ).item ())
     return pred_value ,pred_conf
+def _report_confidence_bucket_metrics (
+task_type :str ,
+confidences ,
+preds ,
+true_labels ,
+num_buckets :int =5
+):
+    if not confidences :
+        print ("    Confidence buckets: skipped (no confidence values).")
+        return
+    conf =np .clip (np .asarray (confidences ,dtype =float ),0.0 ,1.0 )
+    preds_np =np .asarray (preds )
+    labels_np =np .asarray (true_labels )
+    edges =np .linspace (0.0 ,1.0 ,num_buckets +1 )
+    print ("    Confidence buckets:")
+    for i in range (num_buckets ):
+        low =edges [i ]
+        high =edges [i +1 ]
+        if i <num_buckets -1 :
+            mask =(conf >=low )&(conf <high )
+            bucket_label =f"[{low :.2f}, {high :.2f})"
+        else :
+            mask =(conf >=low )&(conf <=high )
+            bucket_label =f"[{low :.2f}, {high :.2f}]"
+        n =int (mask .sum ())
+        if n ==0 :
+            print (f"      - {bucket_label }: n=0")
+            continue
+        if task_type =='classification':
+            acc =accuracy_score (labels_np [mask ],preds_np [mask ])
+            print (f"      - {bucket_label }: n={n } | Accuracy={acc :.4f}")
+        else :
+            bucket_preds =_to_hours (preds_np [mask ])
+            bucket_labels =_to_hours (labels_np [mask ])
+            mae =mean_absolute_error (bucket_labels ,bucket_preds )
+            if n <2 or np .unique (bucket_labels ).size <2 :
+                r2_str ="nan"
+            else :
+                r2_val =r2_score (bucket_labels ,bucket_preds )
+                r2_str =f"{r2_val :.4f}"
+            print (f"      - {bucket_label }: n={n } | MAE={mae :.4f} | R-squared={r2_str }")
 def evaluate_retrieval_augmented (
 model ,
 test_tasks ,
@@ -208,7 +249,8 @@ num_test_queries =200 ,
 candidate_percentages =None ,
 first_expert_only =False ,
 eval_scope ="experts",
-prediction_mode ="proto_head"
+prediction_mode ="proto_head",
+report_confidence_buckets =False
 ):
     print ("\n🔬 Starting Retrieval-Augmented Evaluation...")
     model .eval ()
@@ -223,6 +265,8 @@ prediction_mode ="proto_head"
         print (f"  - Unknown prediction_mode '{prediction_mode }', falling back to 'proto_head'.")
         mode ="proto_head"
     print (f"  - Retrieval prediction mode: {mode }")
+    if report_confidence_buckets and mode !="proto_head":
+        print ("  - Confidence-bucket report is enabled, but ignored for non-proto_head modes.")
     scope =str (eval_scope or "experts").strip ().lower ()
     if scope not in {"experts","model"}:
         print (f"  - Unknown eval_scope '{eval_scope }', falling back to 'experts'.")
@@ -554,4 +598,12 @@ prediction_mode ="proto_head"
                         f"Retrieval MAE: {mean_absolute_error (labels ,preds ):.4f} | "
                         f"R-squared: {r2_score (labels ,preds ):.4f} | "
                         f"Avg. Confidence: {avg_conf :.4f}"
+                        )
+                    if report_confidence_buckets and mode =="proto_head":
+                        _report_confidence_bucket_metrics (
+                        task_type ,
+                        all_confidences ,
+                        all_preds ,
+                        all_true_labels ,
+                        num_buckets =5
                         )

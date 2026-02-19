@@ -35,6 +35,12 @@ if __name__ =='__main__':
     help ="Prediction head for retrieval evaluation: prototypical head or feature-space kNN."
     )
     parser .add_argument (
+    '--test_retrieval_report_confidence_buckets',
+    action ='store_true',
+    default =default_config .get ('test_retrieval_report_confidence_buckets',False ),
+    help ="If set, print per-confidence-bucket metrics (5 buckets) for proto_head retrieval predictions."
+    )
+    parser .add_argument (
     '--test_retrieval_first_expert_only',
     action ='store_true',
     default =default_config .get ('test_retrieval_first_expert_only',False ),
@@ -47,6 +53,7 @@ if __name__ =='__main__':
     CONFIG ['test_retrieval_candidate_percentages']=args .test_retrieval_candidate_percentages
     CONFIG ['test_retrieval_eval_scope']=args .test_retrieval_eval_scope
     CONFIG ['test_retrieval_prediction_mode']=args .test_retrieval_prediction_mode
+    CONFIG ['test_retrieval_report_confidence_buckets']=args .test_retrieval_report_confidence_buckets
     CONFIG ['test_retrieval_first_expert_only']=args .test_retrieval_first_expert_only
     print ("--- 🚀 Initializing Test Run with Configuration ---")
     config_path =os .path .join (args .checkpoint_dir ,'training_config.pth')
@@ -92,6 +99,7 @@ if __name__ =='__main__':
         print (f"  - Retrieval Candidate %: {CONFIG ['test_retrieval_candidate_percentages']}")
         print (f"  - Retrieval Eval Scope: {CONFIG ['test_retrieval_eval_scope']}")
         print (f"  - Retrieval Prediction Mode: {CONFIG ['test_retrieval_prediction_mode']}")
+        print (f"  - Retrieval Confidence Buckets: {CONFIG ['test_retrieval_report_confidence_buckets']}")
     strategy =CONFIG ['embedding_strategy']
     print (f"--- Running Testing Script in Stand-Alone Mode (strategy: '{strategy }') ---")
     device =torch .device ("cuda"if torch .cuda .is_available ()else "cpu")
@@ -134,7 +142,8 @@ if __name__ =='__main__':
         candidate_percentages =CONFIG .get ('test_retrieval_candidate_percentages'),
         first_expert_only =CONFIG .get ('test_retrieval_first_expert_only',False),
         eval_scope =CONFIG .get ('test_retrieval_eval_scope','experts'),
-        prediction_mode =CONFIG .get ('test_retrieval_prediction_mode','proto_head')
+        prediction_mode =CONFIG .get ('test_retrieval_prediction_mode','proto_head'),
+        report_confidence_buckets =CONFIG .get ('test_retrieval_report_confidence_buckets',False)
         )
     elif test_mode =='meta_learning':
         print ("\n--- Running in Meta-Learning Evaluation Mode ---")

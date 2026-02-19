@@ -23,6 +23,8 @@ def main ():
     parser .add_argument ("--test_retrieval_prediction_mode",type =str ,default =None ,
     choices =["proto_head","foundation_knn"],
     help ="Retrieval prediction mode when --test_mode retrieval_augmented is used.")
+    parser .add_argument ("--test_retrieval_report_confidence_buckets",action ="store_true",
+    help ="Enable 5 confidence-bucket metrics in retrieval evaluation (proto_head mode).")
     args =parser .parse_args ()
     project_root =Path (__file__ ).resolve ().parent
     logs_dir =project_root /"logs"
@@ -62,6 +64,8 @@ def main ():
         cmd_base +=["--test_mode",args .test_mode ]
     if args .test_retrieval_prediction_mode :
         cmd_base +=["--test_retrieval_prediction_mode",args .test_retrieval_prediction_mode ]
+    if args .test_retrieval_report_confidence_buckets :
+        cmd_base +=["--test_retrieval_report_confidence_buckets"]
     processed =skipped =0
     print (f"Found {len (all_candidate_logs )} candidate logs")
     print (f"Output directory → {checkpoint_output_dir }\n")
