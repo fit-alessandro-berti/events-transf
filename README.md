@@ -100,3 +100,13 @@ Then point `config.py` to the new files or pass them directly to `testing.py`.
 
 - GPU is optional; the code uses CUDA if available.
 - The pretrained embedding strategy downloads the Sentence-Transformers model specified in `config.py`.
+
+## Feature Dependency Analysis
+
+You can analyze how strongly activity/path indicators depend on time features in prefix vectors:
+
+```bash
+python files/prefix_activity_time_dependency.py ./logs/00013_clos2rep.xes.gz
+```
+
+The script reports distance correlation, MI summaries, and predictive dependence with permutation gaps.
