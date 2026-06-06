@@ -29,3 +29,17 @@ Character vocabulary set in LearnedEventEmbedder.
 
 🔬 Starting meta-testing on the Transformer-based Meta-Learner (Optimized)...
 Pre-computing embeddings for meta-eval classification...
+Pre-computing embeddings for meta-eval regression...
+
+--- Evaluating task: classification ---
+Running classification test as a 7-way task.
+[1-shot] Accuracy: 0.4200 | Avg. Confidence: 0.2781
+[5-shot] Accuracy: 0.5064 | Avg. Confidence: 0.2569
+[10-shot] Accuracy: 0.5350 | Avg. Confidence: 0.2599
+[20-shot] Accuracy: 0.5393 | Avg. Confidence: 0.2544
+
+--- Evaluating task: regression ---
+[1-shot] MAE: 2183.0949 | R-squared: -0.4707 | Avg. Confidence: 1.0000
+[5-shot] MAE: 1346.3307 | R-squared: -0.1665 | Avg. Confidence: 0.3419
+[10-shot] MAE: 1515.5955 | R-squared: -0.0599 | Avg. Confidence: 0.2012
+[20-shot] MAE: 1089.4813 | R-squared: 0.0328 | Avg. Confidence: 0.1075
