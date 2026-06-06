@@ -28,22 +28,29 @@ cleanup_checkpoints =False ):
     print (f"🚀 Starting meta-training...")
     if resume_epoch >0 :
         print (f"--- Resuming from epoch {resume_epoch +1 } ---")
-    base_params ,proto_params =split_params_for_proto (model )
-    optim_groups =[]
     proto_group_idx =None
-    if base_params :
-        optim_groups .append ({"params":base_params ,"lr":config ['lr']})
-    elif proto_params :
-        optim_groups .append ({"params":proto_params ,"lr":config ['lr']})
-        proto_params =[]
-    if proto_params :
-        optim_groups .append ({"params":proto_params ,"lr":config ['lr']})
-        proto_group_idx =len (optim_groups )-1
-    optimizer =optim .AdamW (
-    optim_groups ,
-    lr =config ['lr'],
-    weight_decay =float (config .get ('weight_decay',0.01 ))
-    )
+    if config .get ('proto_head_split_optimizer',False ):
+        base_params ,proto_params =split_params_for_proto (model )
+        optim_groups =[]
+        if base_params :
+            optim_groups .append ({"params":base_params ,"lr":config ['lr']})
+        elif proto_params :
+            optim_groups .append ({"params":proto_params ,"lr":config ['lr']})
+            proto_params =[]
+        if proto_params :
+            optim_groups .append ({"params":proto_params ,"lr":config ['lr']})
+            proto_group_idx =len (optim_groups )-1
+        optimizer =optim .AdamW (
+        optim_groups ,
+        lr =config ['lr'],
+        weight_decay =float (config .get ('weight_decay',0.01 ))
+        )
+    else :
+        optimizer =optim .AdamW (
+        model .parameters (),
+        lr =config ['lr'],
+        weight_decay =float (config .get ('weight_decay',0.01 ))
+        )
     scheduler =CosineAnnealingLR (optimizer ,T_max =config ['epochs'],eta_min =1e-6 )
     if resume_epoch >0 :
         scheduler .last_epoch =resume_epoch

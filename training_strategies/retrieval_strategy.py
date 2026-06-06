@@ -213,15 +213,77 @@ def _covariance_loss(z: torch.Tensor):
     return (off_diag ** 2).sum() / d
 
 
+def _legacy_classification_loss(
+    model,
+    query_label,
+    query_embedding,
+    query_embedding_norm,
+    all_embeddings,
+    all_embeddings_norm,
+    batch_labels,
+    batch_case_ids,
+    query_case_id,
+    positive_indices,
+    retrieval_k_train,
+    device,
+    head_mode,
+):
+    chosen_positive_idx = int(random.choice(positive_indices.tolist()))
+    same_case_indices = np.where(batch_case_ids == query_case_id)[0]
+    indices_to_mask_np = np.append(same_case_indices, chosen_positive_idx).astype(np.int64, copy=False)
+    mask_tensor = torch.from_numpy(indices_to_mask_np).to(device)
+
+    num_neighbors_to_find = retrieval_k_train - 1
+    if num_neighbors_to_find <= 0:
+        neighbor_indices = torch.empty(0, dtype=torch.long, device=device)
+    else:
+        neighbor_indices = find_knn_indices(
+            query_embedding_norm,
+            all_embeddings_norm,
+            k=num_neighbors_to_find,
+            indices_to_mask=mask_tensor,
+        )
+
+    support_indices = torch.cat(
+        [neighbor_indices, torch.tensor([chosen_positive_idx], dtype=torch.long, device=device)]
+    )
+    support_embeddings = all_embeddings[support_indices]
+    support_labels_list = batch_labels[support_indices.cpu().numpy()]
+    support_labels_tensor = torch.as_tensor(support_labels_list, dtype=torch.long, device=device)
+
+    logits, proto_classes, _ = model.proto_head.forward_classification(
+        support_embeddings, support_labels_tensor, query_embedding, mode=head_mode
+    )
+    if logits is None:
+        return None
+
+    label_map = {int(orig.item()): new for new, orig in enumerate(proto_classes)}
+    mapped_label = torch.tensor(
+        [label_map.get(int(query_label), -100)], device=device, dtype=torch.long
+    )
+    if mapped_label.item() == -100:
+        return None
+
+    return F.cross_entropy(logits, mapped_label, label_smoothing=0.05)
+
+
 def run_retrieval_step(model, task_data_pool, task_type, config):
     progress_bar_task = f"retrieval_{task_type}"
     retrieval_k_train = int(config.get("retrieval_train_k", 5))
     retrieval_batch_size = int(config.get("retrieval_train_batch_size", 64))
+    classification_sampling = str(config.get("retrieval_classification_sampling", "v2")).lower()
+    classification_head_mode = str(config.get("retrieval_classification_head_mode", "soft_knn")).lower()
+    legacy_classification = (
+        task_type == "classification"
+        and classification_sampling in {"v1", "legacy", "simple"}
+    )
 
     if len(task_data_pool) < retrieval_batch_size:
         return None, progress_bar_task
 
-    if task_type == "classification":
+    if legacy_classification:
+        batch_tasks_raw = random.sample(task_data_pool, retrieval_batch_size)
+    elif task_type == "classification":
         min_per_class = int(config.get("retrieval_min_per_class", 2))
         max_classes = config.get("retrieval_train_max_classes", None)
         batch_tasks_raw = _sample_balanced_classification_batch(
@@ -309,6 +371,27 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
             if positive_indices.size == 0:
                 continue
 
+            if legacy_classification:
+                loss = _legacy_classification_loss(
+                    model,
+                    query_label,
+                    query_embedding,
+                    query_embedding_norm,
+                    all_embeddings,
+                    all_embeddings_norm_detached,
+                    batch_labels,
+                    batch_case_ids,
+                    query_case_id,
+                    positive_indices,
+                    retrieval_k_train,
+                    device,
+                    classification_head_mode,
+                )
+                if loss is not None and not torch.isnan(loss):
+                    total_loss_for_batch = total_loss_for_batch + loss
+                    queries_processed += 1
+                continue
+
             with torch.no_grad():
                 sims = (query_embedding_norm @ all_embeddings_norm_detached.t()).squeeze(0)
 
@@ -387,7 +470,7 @@ def run_retrieval_step(model, task_data_pool, task_type, config):
             support_labels_tensor = torch.as_tensor(support_labels_list, dtype=torch.long, device=device)
 
             logits, proto_classes, _ = model.proto_head.forward_classification(
-                support_embeddings, support_labels_tensor, query_embedding, mode="soft_knn"
+                support_embeddings, support_labels_tensor, query_embedding, mode=classification_head_mode
             )
             if logits is None:
                 continue
