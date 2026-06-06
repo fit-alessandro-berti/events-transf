@@ -1,0 +1,31 @@
+--- 🚀 Initializing Test Run with Configuration ---
+Loading training config from ./checkpoints/training_config.pth to match model...
+  - Test Log: Found direct path: logs/billing.xes.gz
+  - Test Mode: meta_learning
+  - Test Episodes: 200
+  - Checkpoint Directory: ./checkpoints
+  - Checkpoint Epoch: Latest
+--- Running Testing Script in Stand-Alone Mode (strategy: 'learned') ---
+Using device: cuda
+
+📦 Loading test data...
+Data loader initialized with strategy: 'learned'
+✅ Training artifacts loaded successfully from ./checkpoints/training_artifacts.pth
+Transforming log: 'billing' from /home/berti/V1/events-transf/logs/billing.xes.gz
+
+Transforming logs: ['billing']
+✅ Transformation complete.
+✅ Initialized MoEModel with 4 expert(s).
+Character vocabulary set in LearnedEventEmbedder.
+Character vocabulary set in LearnedEventEmbedder.
+Character vocabulary set in LearnedEventEmbedder.
+Character vocabulary set in LearnedEventEmbedder.
+🔍 Found latest checkpoint: model_epoch_3.pth
+💾 Loading weights from ./checkpoints/model_epoch_3.pth...
+
+🛠️ Creating test tasks...
+
+--- Running in Meta-Learning Evaluation Mode ---
+
+🔬 Starting meta-testing on the Transformer-based Meta-Learner (Optimized)...
+Pre-computing embeddings for meta-eval classification...

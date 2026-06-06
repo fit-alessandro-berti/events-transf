@@ -1,0 +1,45 @@
+--- 🚀 Initializing Test Run with Configuration ---
+Loading training config from ./checkpoints/training_config.pth to match model...
+  - Test Log: Found direct path: logs/helpdesk.xes
+  - Test Mode: meta_learning
+  - Test Episodes: 200
+  - Checkpoint Directory: ./checkpoints
+  - Checkpoint Epoch: Latest
+--- Running Testing Script in Stand-Alone Mode (strategy: 'learned') ---
+Using device: cuda
+
+📦 Loading test data...
+Data loader initialized with strategy: 'learned'
+✅ Training artifacts loaded successfully from ./checkpoints/training_artifacts.pth
+Transforming log: 'helpdesk' from /home/berti/V1/events-transf/logs/helpdesk.xes
+
+Transforming logs: ['helpdesk']
+✅ Transformation complete.
+✅ Initialized MoEModel with 4 expert(s).
+Character vocabulary set in LearnedEventEmbedder.
+Character vocabulary set in LearnedEventEmbedder.
+Character vocabulary set in LearnedEventEmbedder.
+Character vocabulary set in LearnedEventEmbedder.
+🔍 Found latest checkpoint: model_epoch_3.pth
+💾 Loading weights from ./checkpoints/model_epoch_3.pth...
+
+🛠️ Creating test tasks...
+
+--- Running in Meta-Learning Evaluation Mode ---
+
+🔬 Starting meta-testing on the Transformer-based Meta-Learner (Optimized)...
+Pre-computing embeddings for meta-eval classification...
+Pre-computing embeddings for meta-eval regression...
+
+--- Evaluating task: classification ---
+Running classification test as a 7-way task.
+[1-shot] Accuracy: 0.3179 | Avg. Confidence: 0.1681
+[5-shot] Accuracy: 0.3886 | Avg. Confidence: 0.1606
+[10-shot] Accuracy: 0.4229 | Avg. Confidence: 0.1593
+[20-shot] Accuracy: 0.4500 | Avg. Confidence: 0.1590
+
+--- Evaluating task: regression ---
+[1-shot] MAE: 0.3325 | R-squared: -1.1009 | Avg. Confidence: 1.0000
+[5-shot] MAE: 0.2658 | R-squared: -0.1068 | Avg. Confidence: 0.3547
+[10-shot] MAE: 0.2245 | R-squared: 0.0545 | Avg. Confidence: 0.2137
+[20-shot] MAE: 0.2145 | R-squared: 0.1607 | Avg. Confidence: 0.1120
